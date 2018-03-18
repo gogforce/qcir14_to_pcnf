@@ -4,14 +4,25 @@
 #include <limits.h>
 #include <errno.h>
 #include <stdarg.h>
+#include <math.h>
 #include <data_types.h>
 
 FILE *inputStream; // data stream containing input
 unsigned long lineCount = 1; // tracks line number on input file
 char format[10]; // stores input file format
 unsigned long declaredVariableCount = 0; // if it is present and > 0, the formula is in cleansed form
-char word[33]; // stores current string of interest, up to 32 bytes long
+char* word; // stores current string of interest
+size_t wordlen; // size of word
+char* varFormat; // Format argument for fscanf regarding variable names, dependant on wordlen
 
+/*
+ * freeResources frees malloced variables
+ */
+void freeResources(){
+	free(word);
+	free(varFormat);
+	freeVS(data);
+}
 /*
  * A simple program interruption function.
  */
@@ -35,7 +46,7 @@ void die(const char *fmt, ...){
 			perror("Memory allocation failure");
 		}
 		
-		freeVS(data);
+		freeResources();
 		exit(EXIT_FAILURE);
 	}else{
 		va_start(args, fmt);
@@ -43,7 +54,7 @@ void die(const char *fmt, ...){
 		va_end(args);
 		printf("\n");
 		
-		freeVS(data);
+		freeResources();
 		exit(EXIT_SUCCESS);
 	}
 }
@@ -121,7 +132,7 @@ void fSkipWhitespaceAndComments(){
 /* fscanfPlus calls fSkipWhitespaceAndComments and than attempts to fscanf according to provided format.
  * Also checks for a runtime error.
  * 
- * 				  char *format: format to be checked for, no more than 32 chars should be read
+ * 				  char *format: format to be checked for, no more than wordlen-1 chars should be read
  *					   returns: 1 on success, 0 on failure
  * */
 int fscanfPlus(char *format){
@@ -184,21 +195,50 @@ int fscanfAndCheck(char *format){
 }*/
  
  /*
-  * parseVariable reads up to 32 chars if a valid variable name follows, discards the rest.
-  * stores it in 'word' variable
+  * parseVariable reads a valid variable name, storing it in 'word' variable.
+  * Doubles the size of 'word' until it is big enough to fit if neccessary.
   * 
   *    returns: 1 if a variable was read, EOF if EOF reached, 0 otherwise
   */
-int parseVariable(){
+int parseImmediateVariable(){
 	int result;
+	char SingleCharString[2] = "";
 	
-	fSkipWhitespaceAndComments();
-	result = fscanf(inputStream, "%32[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]", word); // ascii letters, digits and underscores
-	if(result < 0 || fscanf(inputStream, "%*[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]") < 0){ // discard rest of variable name
+	result = fscanf(inputStream, varFormat, word); // ascii letters, digits and underscores
+	if(result < 0){
 		if(fscanf(inputStream,"%*c") == EOF){
 			return EOF;
 		}
-		die("Runtime error occured while parsing line %lu (parseVariable)", lineCount);
+		die("Runtime error occured while parsing line %lu (parseImmediateVariable)", lineCount);
+	}
+	while(fscanf(inputStream,"%1[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]", SingleCharString) == 1){
+		// variable name longer than current wordlen-1
+		char *auxWord;
+		char *auxFormat;
+		int newFormatLength; // length of new format string
+		
+		newFormatLength = (69 + floor(log10(abs(wordlen)))); // 66 basic symbols (ascii letters, digits and underscores), 1 more for the digit counting function, 1 more for \0, and 1 more to cover for unknown behaviour
+		auxWord = malloc(sizeof(char)*wordlen*2);
+		auxFormat = malloc(sizeof(char)*newFormatLength);
+		if(auxWord == NULL || auxFormat == NULL){
+			die("Could not allocate memory");
+		}
+		// fill the new buffer with the content of the previous smaller one and the rest
+		strcpy(auxWord, word);
+		free(word);
+		auxWord[wordlen - 1] = SingleCharString[0]; // the char used to check if there is more
+		if(fscanf(inputStream, varFormat, (char *)(auxWord + wordlen)) < 0){
+			if(fscanf(inputStream,"%*c") == EOF){
+				return EOF;
+			}
+			die("Runtime error occured while parsing line %lu (parseImmediateVariable)", lineCount);
+		}
+		free(varFormat);
+		wordlen *= 2; // new length double the previous
+		snprintf(auxFormat, newFormatLength, "%c%zu%s", '%', (wordlen-1), "[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]");
+		varFormat = auxFormat;
+		word = auxWord;
+		//printf("wordlen: %zu; word: %s; foramt: %s\n", wordlen, word, varFormat);
 	}
 	return result;
 }
@@ -224,7 +264,14 @@ int parseVariable(){
 }*/
 
 /*
- * parseLiteral attempts to read a valid literal.
+ * parseVariable calls fSkipWhitespaceAndComments and than parseImmediateVariable
+ */
+int parseVariable(){
+	fSkipWhitespaceAndComments();
+	return parseImmediateVariable();
+}
+/*
+ * parseLiteral calls fSkipWhitespaceAndComments and attempts to read a valid literal.
  * 
  * char *sign: address for the sign to be stored, 0 negative, otherwise positive
  *    returns: 1 if a literal was read, 0 otherwise
@@ -238,10 +285,7 @@ int parseLiteral(char *sign){
 	}else{
 		*sign = 1;
 	}
-	result = fscanf(inputStream, "%32[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]", word); // ascii letters, digits and underscores
-	if(result < 0 || fscanf(inputStream, "%*[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]") < 0){ // discard rest of variable name
-		die("Runtime error occured while parsing line %lu", lineCount);
-	}
+	result = parseImmediateVariable();
 	return result;
 }
 /*
@@ -284,10 +328,10 @@ void parseQCIR(char *inputString, long fsize)
 					break;
 					}
 				}else {
-					char auxWord[33] = "";
+					char auxWord[32] = "";
 					fscanf(inputStream,"%*[0123456789]"); // omit any digits left
 					declaredVariableCount = strtoul(word, NULL, 10);
-					snprintf(auxWord, 32, "%lu", declaredVariableCount);
+					snprintf(auxWord, 31, "%lu", declaredVariableCount);
 					if(strcmp(word,auxWord)){ // if parsed value is different from input one, than input is too big to store, replace with ULONG_MAX
 						declaredVariableCount = ULONG_MAX;
 					}
@@ -488,7 +532,8 @@ void parseQCIR(char *inputString, long fsize)
 
 /*
  * traverseTree starts from the gate with the same name as defined in output(),
- * marking all reached variables(alias = 0) and counting the amount of resulting clauses (according to Tseitin)
+ * marking all reached variables (alias = ULONG_MAX) and counting the amount of
+ * resulting clauses (according to Tseitin)
  */
 void traverseTree(){
 	varList *vlHead = NULL;
@@ -521,7 +566,7 @@ void traverseTree(){
 	
 	do{ // traverse list as it expands
 		currentVar = currentVL->variable;
-		currentVar->alias = 0; // mark visited variable
+		currentVar->alias = ULONG_MAX; // mark visited variable
 		g = currentVar->gateDefinition;
 		if(g){ // check if it is a gate variable
 			ll = g->literals;
@@ -569,7 +614,7 @@ void printPrefixQDIMACS(){
 		currentVL = currentQB->variables;
 		while(currentVL){
 			if(currentVL->variable->alias > 0){
-				printf("%ld ", currentVL->variable->alias);
+				printf("%lu ", currentVL->variable->alias);
 			}
 			currentVL = currentVL->next;
 		}
@@ -591,9 +636,9 @@ void printQDIMACS(){
 	printf("p cnf %lu %lu\n", data->tseitinVariableCount, data->tseitinClauseCount); // problem line
 	printPrefixQDIMACS(); // prefix
 	if(data->outputSign){ // root literal positive
-		printf("%ld 0\n", data->outputVar->alias);
+		printf("%lu 0\n", data->outputVar->alias);
 	}else{ // root literal negative
-		printf("-%ld 0\n", data->outputVar->alias);
+		printf("-%lu 0\n", data->outputVar->alias);
 	}
 	
 	while(currentElem){
@@ -607,20 +652,20 @@ void printQDIMACS(){
 		if(currentGate->type == AND){
 			while(currentLit){
 				if(currentLit->sign){ // current literal positive
-					printf("-%ld %ld 0\n", currentGateAlias, currentLit->variable->alias);
+					printf("-%lu %lu 0\n", currentGateAlias, currentLit->variable->alias);
 				}else{ // current literal negative
-					printf("-%ld -%ld 0\n", currentGateAlias, currentLit->variable->alias);
+					printf("-%lu -%lu 0\n", currentGateAlias, currentLit->variable->alias);
 				}
 				currentLit = currentLit->next;
 			}
-			printf("%ld ", currentGateAlias);
+			printf("%lu ", currentGateAlias);
 			// reset pointer over literals
 			currentLit = currentGate->literals;
 			while(currentLit){
 				if(currentLit->sign){ // current literal positive
-					printf("-%ld ", currentLit->variable->alias);
+					printf("-%lu ", currentLit->variable->alias);
 				}else{ // current literal negative
-					printf("%ld ", currentLit->variable->alias);
+					printf("%lu ", currentLit->variable->alias);
 				}
 				currentLit = currentLit->next;
 			}
@@ -628,20 +673,20 @@ void printQDIMACS(){
 		}else if(currentGate->type == OR){
 			while(currentLit){
 				if(currentLit->sign){ // current literal positive
-					printf("%ld -%ld 0\n", currentGateAlias, currentLit->variable->alias);
+					printf("%lu -%lu 0\n", currentGateAlias, currentLit->variable->alias);
 				}else{ // current literal negative
-					printf("%ld %ld 0\n", currentGateAlias, currentLit->variable->alias);
+					printf("%lu %lu 0\n", currentGateAlias, currentLit->variable->alias);
 				}
 				currentLit = currentLit->next;
 			}
-			printf("-%ld ", currentGateAlias);
+			printf("-%lu ", currentGateAlias);
 			// reset pointer over literals
 			currentLit = currentGate->literals;
 			while(currentLit){
 				if(currentLit->sign){ // current literal positive
-					printf("%ld ", currentLit->variable->alias);
+					printf("%lu ", currentLit->variable->alias);
 				}else{ // current literal negative
-					printf("-%ld ", currentLit->variable->alias);
+					printf("-%lu ", currentLit->variable->alias);
 				}
 				currentLit = currentLit->next;
 			}
@@ -651,27 +696,27 @@ void printQDIMACS(){
 			long y = currentLit->next->variable->alias;
 			if(currentLit->sign){ // x
 				if(currentLit->next->sign){ // x y
-					printf("-%ld -%ld -%ld 0\n", x, y, currentGateAlias);
-					printf("%ld %ld -%ld 0\n", x, y, currentGateAlias);
-					printf("-%ld %ld %ld 0\n", x, y, currentGateAlias);
-					printf("%ld -%ld %ld 0\n", x, y, currentGateAlias);
+					printf("-%lu -%lu -%lu 0\n", x, y, currentGateAlias);
+					printf("%lu %lu -%lu 0\n", x, y, currentGateAlias);
+					printf("-%lu %lu %lu 0\n", x, y, currentGateAlias);
+					printf("%lu -%lu %lu 0\n", x, y, currentGateAlias);
 				}else{ // x -y
-					printf("-%ld %ld -%ld 0\n", x, y, currentGateAlias);
-					printf("%ld -%ld -%ld 0\n", x, y, currentGateAlias);
-					printf("-%ld -%ld %ld 0\n", x, y, currentGateAlias);
-					printf("%ld %ld %ld 0\n", x, y, currentGateAlias);
+					printf("-%lu %lu -%lu 0\n", x, y, currentGateAlias);
+					printf("%lu -%lu -%lu 0\n", x, y, currentGateAlias);
+					printf("-%lu -%lu %lu 0\n", x, y, currentGateAlias);
+					printf("%lu %lu %lu 0\n", x, y, currentGateAlias);
 				}
 			}else{ // -x
 				if(currentLit->next->sign){ // -x y
-					printf("%ld -%ld -%ld 0\n", x, y, currentGateAlias);
-					printf("-%ld %ld -%ld 0\n", x, y, currentGateAlias);
-					printf("%ld %ld %ld 0\n", x, y, currentGateAlias);
-					printf("-%ld -%ld %ld 0\n", x, y, currentGateAlias);
+					printf("%lu -%lu -%lu 0\n", x, y, currentGateAlias);
+					printf("-%lu %lu -%lu 0\n", x, y, currentGateAlias);
+					printf("%lu %lu %lu 0\n", x, y, currentGateAlias);
+					printf("-%lu -%lu %lu 0\n", x, y, currentGateAlias);
 				}else{ // -x -y
-					printf("%ld %ld -%ld 0\n", x, y, currentGateAlias);
-					printf("-%ld -%ld -%ld 0\n", x, y, currentGateAlias);
-					printf("%ld -%ld %ld 0\n", x, y, currentGateAlias);
-					printf("-%ld %ld %ld 0\n", x, y, currentGateAlias);
+					printf("%lu %lu -%lu 0\n", x, y, currentGateAlias);
+					printf("-%lu -%lu -%lu 0\n", x, y, currentGateAlias);
+					printf("%lu -%lu %lu 0\n", x, y, currentGateAlias);
+					printf("-%lu %lu %lu 0\n", x, y, currentGateAlias);
 				}
 			}
 		}else if(currentGate->type == ITE){
@@ -680,33 +725,33 @@ void printQDIMACS(){
 			long z = currentLit->next->next->variable->alias;
 			if(currentLit->sign){ // x
 				if(currentLit->next->sign){ // x y
-					printf("-%ld -%ld %ld 0\n", x, y, currentGateAlias);
-					printf("-%ld %ld -%ld 0\n", x, y, currentGateAlias);
+					printf("-%lu -%lu %lu 0\n", x, y, currentGateAlias);
+					printf("-%lu %lu -%lu 0\n", x, y, currentGateAlias);
 				}else{ // x -y
-					printf("-%ld %ld %ld 0\n", x, y, currentGateAlias);
-					printf("-%ld -%ld -%ld 0\n", x, y, currentGateAlias);
+					printf("-%lu %lu %lu 0\n", x, y, currentGateAlias);
+					printf("-%lu -%lu -%lu 0\n", x, y, currentGateAlias);
 				}
 				if(currentLit->next->next->sign){ // x z
-					printf("%ld %ld -%ld 0\n", x, z, currentGateAlias);
-					printf("%ld -%ld %ld 0\n", x, z, currentGateAlias);
+					printf("%lu %lu -%lu 0\n", x, z, currentGateAlias);
+					printf("%lu -%lu %lu 0\n", x, z, currentGateAlias);
 				}else{ // x -z
-					printf("%ld -%ld -%ld 0\n", x, z, currentGateAlias);
-					printf("%ld %ld %ld 0\n", x, z, currentGateAlias);
+					printf("%lu -%lu -%lu 0\n", x, z, currentGateAlias);
+					printf("%lu %lu %lu 0\n", x, z, currentGateAlias);
 				}
 			}else{ // -x
 				if(currentLit->next->sign){ // x y
-					printf("%ld -%ld %ld 0\n", x, y, currentGateAlias);
-					printf("%ld %ld -%ld 0\n", x, y, currentGateAlias);
+					printf("%lu -%lu %lu 0\n", x, y, currentGateAlias);
+					printf("%lu %lu -%lu 0\n", x, y, currentGateAlias);
 				}else{ // x -y
-					printf("%ld %ld %ld 0\n", x, y, currentGateAlias);
-					printf("%ld -%ld -%ld 0\n", x, y, currentGateAlias);
+					printf("%lu %lu %lu 0\n", x, y, currentGateAlias);
+					printf("%lu -%lu -%lu 0\n", x, y, currentGateAlias);
 				}
 				if(currentLit->next->next->sign){ // x z
-					printf("-%ld %ld -%ld 0\n", x, z, currentGateAlias);
-					printf("-%ld -%ld %ld 0\n", x, z, currentGateAlias);
+					printf("-%lu %lu -%lu 0\n", x, z, currentGateAlias);
+					printf("-%lu -%lu %lu 0\n", x, z, currentGateAlias);
 				}else{ // x -z
-					printf("-%ld -%ld -%ld 0\n", x, z, currentGateAlias);
-					printf("-%ld %ld %ld 0\n", x, z, currentGateAlias);
+					printf("-%lu -%lu -%lu 0\n", x, z, currentGateAlias);
+					printf("-%lu %lu %lu 0\n", x, z, currentGateAlias);
 				}
 			}
 		}
@@ -747,12 +792,22 @@ int main(int argc, char **argv){
 	fclose(fpIn);
 	input[fsize] = 0;
 	
+	// initialize data structure
 	data = malloc(sizeof(varSets)); // define variable pool
 	if(data){
 		*data = (varSets){0};
 	}else{
 		die("Could not allocate memory");
 	}
+	
+	wordlen = 32;
+	word = malloc(sizeof(char)*wordlen);
+	varFormat = malloc(sizeof(char)*70);
+	if(word == NULL || varFormat == NULL){
+		die("Could not allocate memory");
+	}
+	strcpy(varFormat, "%31[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]"); // ascii letters, digits and underscores
+
 	
 	parseQCIR(input, fsize);
 	free(input);
@@ -765,14 +820,14 @@ int main(int argc, char **argv){
 		}
 	}
 	
-	/* Test printing
+	 //Test printing
 	printData();
 	printf("Tseitin clause count: %lu\n", data->tseitinClauseCount);
 	printf("Tseitin variable count: %lu\n\n", data->tseitinVariableCount);
-	*/
+	
 	printQDIMACS();
 	
-	freeVS(data); // free variable storage
+	freeResources(); // free variable storage
 	
 	return 0;
 }

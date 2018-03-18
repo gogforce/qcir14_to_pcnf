@@ -14,7 +14,7 @@ struct gate;
 
 typedef struct{
     char* name; // variable name as found in input
-	long alias; // -1 untill checked for inclusion in formula, set to 0 afterwards, than replaced with new alias
+	unsigned long alias; // 0 untill checked for inclusion in formula, set to ULONG_MAX afterwards, than replaced with new alias
 	struct gate* gateDefinition; // points to gate definition if this is a gate variable, otherwise NULL
 }var;
 
@@ -63,7 +63,7 @@ typedef struct {
 
 varSets *data;
 unsigned long lineCount;
-char word[33];
+char* word;
 
 // --- REQUIRED FUNCTIONS --- //
 

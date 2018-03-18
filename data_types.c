@@ -69,7 +69,7 @@ var *createVar(char *name){
 	if((result = malloc(sizeof(var)))){
 		if((result->name = malloc(strlen(name)+1))){
 			strcpy(result->name, name);
-			result->alias = -1; // initially unreached
+			result->alias = 0; // initially unreached
 			result->gateDefinition = NULL;
 			return result;
 		}
@@ -337,9 +337,10 @@ void quantifyGateVars(){
 // go through all the relevant variables in the list and give them a new integer alias
 void indexVarVL(varList *list){
 	while(list != NULL){
-		if(list->variable->alias == 0){
+		if(list->variable->alias > 0){
 			//++(data->tseitinVariableCount);
 			list->variable->alias = ++(data->tseitinVariableCount);
+			//printf("%lu %s \n", list->variable->alias, list->variable->name);
 		}
 		list = list->next;
 	}
@@ -410,7 +411,7 @@ void indexVars(){
 	data->tseitinVariableCount = 0;
 	indexVarVL(data->freeVars);
 	indexVarQB(data->prefix);
-	indexVarVL(data->gateVars);
+	//indexVarVL(data->gateVars); // already indexed, because they are part of the prefix
 }
 
 // free data structure
