@@ -119,6 +119,28 @@ varList *addVarVL(varList **list, var *toAdd){
 	return NULL;
 }
 
+varList * addGateVar(var *toAdd){
+	varList *v;
+	if(toAdd == NULL){
+		return NULL;
+	}
+	v = malloc(sizeof(varList));
+	if(v){
+		v->variable = toAdd;
+		v->next = NULL;
+		if(data->lastGateVar){
+			data->lastGateVar->next = v;
+		}else{
+			data->gateVars = v;
+		}
+		data->lastGateVar = v;
+		return v;
+	}else{
+		die("Runtime error occured at memory initialization (addGateVar)");
+	}
+	return NULL;
+}
+
 // add a new literal to beginning of the list, sign = 0 means negative, otherwise positive
 // updates argument pointer and returns pointer to new head
 litList *addVarLLHead(litList **list, char sign, var *variable){
@@ -225,6 +247,20 @@ gate *defineGateVar(var *target, char type){
 		result->literals = NULL;
 		result->type = type;
 		result->variable = target;
+		if(type == TRUE || type == FALSE){
+			result->subtreeSize = 0;
+		}else{
+			result->subtreeSize = 1;
+		}
+		result->localFreeVars = NULL;
+		result->localPrefix = NULL;
+		result->localScope = NULL;
+		result->uses = 0;
+		if(target->gateDefinition){
+			freeLL(target->gateDefinition->literals);
+			//free(target->gateDefinition->) necessary?
+			free(target->gateDefinition);
+		}
 		target->gateDefinition = result;
 		return result;
 	}
@@ -232,28 +268,382 @@ gate *defineGateVar(var *target, char type){
 	return NULL;
 }
 
-// create and add a new unique gate variable to data set
-// returns a pointer to newly created variable
-var *addUniqueGateVar(){
-	varList *elem = addUniqueVarVL(&(data->gateVars), word);
-	return elem->variable;
+// add a new unique gate variable to data set
+void addUniqueGateVar(var *toAdd){
+	checkUniqueness(toAdd->name);
+	addGateVar(toAdd);
+	//addVarVL(&(data->gateVars), toAdd);
 }
 
+// copy a varList with references to the same variables
+varList *copyVL(varList *toCopy){
+	if(toCopy == NULL){
+		return NULL;
+	}
+	varList *current = toCopy;
+	varList *newHead, *newCurrent, *newTail;
+	newHead = malloc(sizeof(varList));
+	if(newHead == NULL){
+		die("Runtime error occured at memory initialization (copyVL)");
+	}
+	newTail = newHead;
+	newCurrent = newHead;
+	while(1){
+		newCurrent->variable = current->variable;
+		newTail = newCurrent;
+		//printf("Problem copyVL?");
+		if(current->next == NULL){
+			newCurrent->next = NULL;
+			break;
+		}
+		current = current->next;
+		newCurrent = malloc(sizeof(varList));
+		if(newCurrent == NULL){
+			die("Runtime error occured at memory initialization (copyVL)");
+		}
+		newTail->next = newCurrent;
+	}
+	return newHead;
+}
+
+// copy a qBlock with references to the same variables
+qBlock *copyQB(qBlock *toCopy){
+		//printf("Problem copyQB? -1");
+	if(toCopy == NULL){
+		return NULL;
+	}
+	qBlock *current = toCopy;
+	qBlock *newHead, *newTail, *newBlock;
+		//printf("Problem copyQB? 0");
+	newHead = malloc(sizeof(qBlock));
+	if(newHead == NULL){
+		die("Runtime error occured at memory initialization (copyQB)");
+	}
+	newTail = newHead;
+	newBlock = newHead;
+		//printf("Problem copyQB? 1");
+	while(1){
+		newBlock->prev = newTail;
+		newBlock->type = current->type;
+		//printf("Problem copyQB? 2");
+		newBlock->variables = copyVL(current->variables);
+		newTail = newBlock;
+		current = current->next;
+		if(current == toCopy){
+			newBlock->next = newHead;
+			newHead->prev = newBlock;
+			break;
+		}
+		newBlock = malloc(sizeof(qBlock));
+		if(newBlock){
+			newTail->next = newBlock;
+		}else{
+			die("Runtime error occured at memory initialization (addVarQB)");
+		}
+	}
+	return newHead;
+}
+// copy a tree beginning at root gate, return a pointer to new root,
+// references to non-gate vars are kept, returns argument if it is not a gate
+var *copyTree(var *root){
+	if(root->gateDefinition == NULL){
+		return root;
+	}
+	//printf("Copying %s\n", root->name);
+	var *result = createVar(root->name);
+	gate *g = defineGateVar(result, root->gateDefinition->type);
+	g->uses = 1;
+	g->subtreeSize = root->gateDefinition->subtreeSize;
+	g->localFreeVars = root->gateDefinition->localFreeVars;
+	g->localScope = root->gateDefinition->localScope;
+	//printf("%p\n",root->gateDefinition->localPrefix);
+	//printf("Problem before copyQB?\n");
+	g->localPrefix = copyQB(root->gateDefinition->localPrefix);
+	// copy literals
+	litList *current = root->gateDefinition->literals;
+	if(current == NULL){ return result;}
+	litList *newHead, *newCurrent, *newTail;
+	newHead = malloc(sizeof(litList));
+	if(newHead == NULL){
+		die("Runtime error occured at memory initialization (copyTree)");
+	}
+	newTail = newHead;
+	newCurrent = newHead;
+	while(1){
+		//printf("Problem while populating literals?\n");
+		newCurrent->sign = current->sign;
+		newCurrent->variable = copyTree(current->variable);
+		newTail = newCurrent;
+		if(current->next == NULL){
+			newCurrent->next = NULL;
+			break;
+		}
+		current = current->next;
+		newCurrent = malloc(sizeof(litList));
+		if(newCurrent == NULL){
+			die("Runtime error occured at memory initialization (copyTree)");
+		}
+		newTail->next = newCurrent;
+	}
+	g->literals = newHead;
+	addGateVar(result);
+	return result;
+}
+
+void addLitToGate(gate *g, char sign, var *atom, char isNewVar){
+	char duplicate = 0; // set to 1 if variable already occurs in this gate
+	char duplicateSign; // stores the sign of duplicate variable already present
+	int duplicateIndex = 0; // index of duplicate, beginning from 1
+	unsigned int litCount = 0; // amount of literals already stored in gate, not fully counted if a duplicate is found
+	char type = 0; // type of atom to add if it is a gate
+	
+	if(isNewVar == 0){ // check if a variable already occurs in this gate
+		litList *current = g->literals;
+		while(current){
+			++litCount;
+			if(strcmp(current->variable->name, atom->name) == 0){
+				duplicate = 1;
+				duplicateSign = current->sign;
+				duplicateIndex = litCount;
+			}
+			if(duplicate && litCount > 3){
+				break;
+			}
+			current = current->next;
+		}
+	
+		if(duplicate == 0){
+			while(atom->gateDefinition != NULL && atom->gateDefinition->type == PASS){ // reach through PASS gates
+				if(atom->gateDefinition->literals->sign == sign){
+					sign = 1;
+				}else{
+					sign = 0;
+				}
+				atom = atom->gateDefinition->literals->variable;
+			}
+			if(atom->gateDefinition != NULL){
+				type = atom->gateDefinition->type;
+				if(type != TRUE && type != FALSE && g->type != PASS){
+					// increase usage counter, copy in case of multiple use
+					atom->gateDefinition->uses += 1;
+					if(atom->gateDefinition->uses > 1){
+						atom = copyTree(atom);
+					}
+					// update subtree size if necessary
+					if(g->subtreeSize <= atom->gateDefinition->subtreeSize){
+						g->subtreeSize = atom->gateDefinition->subtreeSize + 1;
+					}
+				}
+			}
+		}
+	}
+	if(g->type == EXISTS || g->type == FORALL){
+		if(litCount == 0){
+			if((type == TRUE && sign > 0)||(type == FALSE && sign == 0)){
+				g->localPrefix = NULL;
+				g->type = TRUE;
+				g->subtreeSize = 0;
+			}else if((type == FALSE && sign > 0)||(type == TRUE && sign == 0)){
+				g->localPrefix = NULL;
+				g->type = FALSE;
+				g->subtreeSize = 0;
+			}else{
+				addVarLLHead(&(g->literals), sign, atom);
+			}
+		}
+	}else if(g->type == AND){
+		if(duplicate){
+			if(duplicateSign == sign){
+				// AND(_,x,x) -> AND(_,x)
+			}else{
+				// AND(_,x,-x) -> FALSE()
+				g->type = FALSE;
+				freeLL(g->literals);
+				g->literals = NULL;
+				g->subtreeSize = 0;
+			}
+		}else if((type == TRUE && sign > 0)||(type == FALSE && sign == 0)){
+			// AND(_,TRUE) -> AND(_)
+		}else if((type == FALSE && sign > 0)||(type == TRUE && sign == 0)){
+			// AND(_,FALSE) -> FALSE()
+			g->type = FALSE;
+			freeLL(g->literals);
+			g->literals = NULL;
+			g->subtreeSize = 0;
+		}else{
+			addVarLLHead(&(g->literals), sign, atom);
+		}
+	}else if(g->type == OR){
+		if(duplicate){
+			if(duplicateSign == sign){
+				// OR(_,x,x) -> OR(_,x)
+			}else{
+				// OR(_,x,-x) -> TRUE()
+				g->type = TRUE;
+				freeLL(g->literals);
+				g->literals = NULL;
+				g->subtreeSize = 0;
+			}
+		}else if((type == TRUE && sign > 0)||(type == FALSE && sign == 0)){
+			// OR(_,TRUE) -> TRUE()
+			g->type = TRUE;
+			freeLL(g->literals);
+			g->literals = NULL;
+			g->subtreeSize = 0;
+		}else if((type == FALSE && sign > 0)||(type == TRUE && sign == 0)){
+			// OR(_,FALSE) -> OR(_)
+		}else{
+			addVarLLHead(&(g->literals), sign, atom);
+		}
+	}else if(g->type == XOR){ // xor gate: ordering of literals matters
+		if(duplicate){
+			if(duplicateSign == sign){
+				// FALSE constant
+				g->type = FALSE;
+				freeLL(g->literals);
+				g->literals = NULL;
+				g->subtreeSize = 0;
+			}else{
+				// TRUE constant
+				g->type = TRUE;
+				freeLL(g->literals);
+				g->literals = NULL;
+				g->subtreeSize = 0;
+			}
+		}else if((type == TRUE && sign > 0)||(type == FALSE && sign == 0)){
+			if(litCount == 0){ // XOR(TRUE,_) (-> XOR(TRUE,x) -> PASS(-x))
+				// add constant and remove it when second lit is parsed
+				addVarLLHead(&(g->literals), sign, atom);
+			}else{
+				// XOR(x, TRUE) -> PASS(-x), also XOR(TRUE,TRUE) -> PASS(-TRUE)
+				g->type = PASS;
+				if(g->literals->sign){
+					g->literals->sign = 0;
+				}else{
+					g->literals->sign = 1;
+				}
+			}
+		}else if((type == FALSE && sign > 0)||(type == TRUE && sign == 0)){
+			// PASS gate; XOR(x,FALSE),XOR(FALSE,x) -> PASS(x)
+			g->type = PASS;
+		}else{
+			if(g->literals && g->literals->variable->gateDefinition){
+				char previousType = g->literals->variable->gateDefinition->type;
+				if((previousType == TRUE && g->literals->sign > 0)||(previousType == FALSE && g->literals->sign == 0)){
+					// XOR(TRUE,x) -> PASS(-x)
+					g->type = PASS;
+					freeLL(g->literals);
+					g->literals = NULL;
+					if(sign){
+						sign = 0;
+					}else{
+						sign = 1;
+					}
+				}
+			}
+			addVarLLTail(&(g->literals), sign, atom);
+		}
+	}else if(g->type == ITE){  // ite gate: ordering of literals matters
+		if(g->literals && g->literals->variable->gateDefinition){
+			char previousType = g->literals->variable->gateDefinition->type;
+			if((previousType == FALSE && g->literals->sign > 0)||(previousType == TRUE && g->literals->sign == 0)){
+				if(litCount == 1){// ITE(FALSE,x,_) -> PASS()
+				g->type = PASS;
+				freeLL(g->literals);
+				g->literals = NULL;
+				}else{
+					die("Bad ITE gate content, FALSE constant and another variable (addLitToGateAssumeFree)");
+				}
+			}
+		}else if(duplicate){
+			if(duplicateIndex == 1){
+				if(litCount == 1){ // first two literals identical
+					if(duplicateSign == sign){
+						// ITE becomes OR; ITE(x,x,_) -> OR(x,_)
+						g->type = OR;
+					}else{
+						// ITE becomes AND; ITE(x,-x,_) -> AND(-x,_)
+						g->type = AND;
+						g->literals->sign = sign; // exchange sign
+					}
+				}else if(litCount == 2){ // first and third literals identical
+					if(duplicateSign == sign){
+						// ITE becomes AND; ITE(x,y,x) -> AND(x,y)
+						g->type = AND;
+					}else{
+						// ITE becomes OR; ITE(x,y,-x) -> OR(-x,y)
+						g->type = OR;
+						g->literals->sign = sign; // exchange sign
+					}
+				}
+			}else if(duplicateIndex == 2 && litCount == 2){
+				if(duplicateSign == sign){
+					// PASS gate; ITE(x,y,y) -> PASS(y)
+					g->type = PASS;
+					litList *old = g->literals;
+					g->literals = g->literals->next;
+					old->next = NULL;
+					freeLL(old);
+				}else{
+					// XOR gate; ITE(x,y,-y) -> XOR(x,-y)
+					g->type = XOR;
+					g->literals->next->sign = sign;
+				}
+			}else{
+				die("Bad ITE gate content (addLitToGateAssumeFree)");
+			}
+		}else if((type == TRUE && sign > 0)||(type == FALSE && sign == 0)){
+			if(litCount == 0){ // ITE(TRUE,x,y) -> PASS(x)
+				g->type = PASS;
+			}else if(litCount == 1){ // ITE(x,TRUE,_) -> OR(x,_)
+				g->type = OR;
+			}else if(litCount == 2){ // ITE(x,y,TRUE) -> OR(-x,y)
+				g->type = OR;
+				if(g->literals->sign){
+					g->literals->sign = 0;
+				}else{
+					g->literals->sign = 1;
+				}
+			}
+		}else if((type == FALSE && sign > 0)||(type == TRUE && sign == 0)){
+			if(litCount == 0){ // ITE(FALSE,_,_) ... wait next input
+				addVarLLTail(&(g->literals), sign, atom);
+			}else if(litCount == 1){ // ITE(x,FALSE,_) -> AND(-x,_)
+				g->type = AND;
+				if(g->literals->sign){
+					g->literals->sign = 0;
+				}else{
+					g->literals->sign = 1;
+				}
+			}else if(litCount == 2){ // ITE(x,y,FALSE) -> AND(x,y)
+				g->type = AND;
+			}
+		}else{
+			addVarLLTail(&(g->literals), sign, atom);
+		}
+	}else if(g->type == TRUE || g->type == FALSE){
+		//die("Adding a literal to a truth constant gate pointless (addLitToGateAssumeFree)");
+	}else if(g->type == PASS){
+		if(litCount == 0){
+			addVarLLHead(&(g->literals), sign, atom);
+		}else{
+			//die("Adding a literal to a non-empty PASS gate pointless (addLitToGateAssumeFree)");
+		}
+	}
+}
 // add a new literal to a gate, assume a free variable if not already defined in data
 // returns a pointer to and if a new var was created and added to free()
 var *addLitToGateAssumeFree(gate *g, char sign){
 	var *atom,*result = NULL;
+	char isNewVar = 0;
 	atom = getVarVS(data, word); // get if already defined
 	if(atom == NULL){ // assume free if not already defined
 		varList *elem = addNewVarVL(&(data->freeVars), word);
 		atom = elem->variable;
 		result = atom;
+		isNewVar = 1;
 	}
-	if(g->type == 3 || g->type == 4){ // and,or gate
-		addVarLLHead(&(g->literals), sign, atom);
-	}else if(g->type == 5 || g->type == 6){ // xor,ite gate: ordering of literals matters
-		addVarLLTail(&(g->literals), sign, atom);
-	}
+	addLitToGate(g, sign, atom, isNewVar);
 	return result;
 }
 
@@ -280,7 +670,7 @@ void addVarQB(qBlock **head, char quantifier){
 				}
 			}
 		}else{ // tail pointer is NULL, should not be reached
-			
+			die("VIOLATED INVARIANT: QBlock tail pointer should not be NULL");
 		}
 	}else{ // create first QBlock
 		*head = malloc(sizeof(qBlock));
@@ -419,6 +809,7 @@ void freeVar(var *v){
 	free(v->name);
 	if(v->gateDefinition){
 		freeLL(v->gateDefinition->literals);
+		//free(v->gateDefinition->) necessary?
 		free(v->gateDefinition);
 	}
 	free(v);
@@ -485,10 +876,9 @@ void printFree(){
 	printVL(data->freeVars);
 	printf("\n");
 }
-//print contents of quantifier prefix to stdout
-void printPrefix(){
-	qBlock *head, *current;
-	head = data->prefix;
+
+void printQB(qBlock *head){
+	qBlock *current;
 	if(head == NULL){
 		return;
 	}
@@ -500,6 +890,10 @@ void printPrefix(){
 		printf("\n");
 		current = current->next;
 	}while(current && current != head);
+}
+// print contents of quantifier prefix to stdout
+void printPrefix(){
+	printQB(data->prefix);
 }
 
 void printGates(){
@@ -522,6 +916,29 @@ void printGates(){
 		printf(")\n");
 		currElem = currElem->next;
 	}while(currElem);
+}
+
+void printTree(var *root){
+	gate* currGate;
+	litList *currLit;
+	if(root == NULL || root->gateDefinition == NULL){
+		return;
+	}
+	currGate = root->gateDefinition;
+	currLit = currGate->literals;
+	printf("%s = %d, length:%d\n", root->name, currGate->type, currGate->subtreeSize);
+	printQB(currGate->localPrefix);
+	printf("(");
+	while(currLit){
+		printf("%d-%s ", currLit->sign, currLit->variable->name);
+		currLit = currLit->next;
+	}
+	printf(")\n");
+	currLit = currGate->literals;
+	while(currLit){
+		printTree(currLit->variable);
+		currLit = currLit->next;
+	}
 }
 
 void printData(){

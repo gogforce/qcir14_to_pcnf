@@ -444,11 +444,13 @@ void parseQCIR(char *inputString, long fsize)
 			if(parseVariable() == -1){
 				break; // EOF reached
 			}else{
-				// TODO something else found,die ?
+				// TODO something else found, die ?
 				break;
 			}
 		}
-		v = addUniqueGateVar();
+		// Gate name must be unique, create a new var but first we must parse literals to see at which level it belongs
+		checkUniqueness(word);
+		v = createVar(word);
 		
 		fscanExpectedChar('=');
 		if(fscanfPlus("%7[frexistoalndFREXISTOALND]") == 0){ // scan next keyword
@@ -467,6 +469,22 @@ void parseQCIR(char *inputString, long fsize)
 						die("Parsing failed at line %lu: variable name expected after ','", lineCount);
 					}
 				}
+				if(g->literals){
+					if(g->literals->next){
+						// at least two literals, no need to change
+					}else{ // only one literal
+						if(g->type == AND){
+							g->type = PASS;
+						}
+					}
+				}else{
+					if(g->type == AND){
+						g->type = TRUE;
+					}
+				}
+			}
+			if(g->literals == NULL && g->type == AND){
+				g->type = TRUE;
 			}
 		}else if(strcmp(word, "or") == 0 || strcmp(word, "OR") == 0){ // 'or' gate
 			g = defineGateVar(v, OR); // add definition
@@ -480,6 +498,18 @@ void parseQCIR(char *inputString, long fsize)
 						die("Parsing failed at line %lu: variable name expected after ','", lineCount);
 					}
 				}
+				if(g->literals){
+					if(g->literals->next){
+						// at least two literals, no need to change
+					}else{ // only one literal
+						if(g->type == OR){
+							g->type = PASS;
+						}
+					}
+				}
+			}
+			if(g->literals == NULL && g->type == OR){
+				g->type = FALSE;
 			}
 		}else if(strcmp(word, "xor" ) == 0 || strcmp(word, "XOR") == 0){ // 'xor' gate
 			char error = 1;
@@ -518,11 +548,19 @@ void parseQCIR(char *inputString, long fsize)
 			if(error){
 				die("Parsing failed at line %lu: bad 'ite' syntax", lineCount);
 			}
+			if(g->type == AND || g->type == OR){
+				if(g->literals){
+					if(g->literals->next == NULL){ // only one literal
+						g->type = PASS;
+					}
+				}
+			}
 		}else{
 			die("Parsing failed at line %lu: 'exists', 'forall', 'and', 'or', 'xor' or 'ite' expected", lineCount);
 		}
 		
 		fscanExpectedChar(')'); // all gate statements end with ')'
+		addUniqueGateVar(v);
 		//fCheckNewline();
 	}
 	
@@ -580,13 +618,13 @@ void traverseTree(){
 				if(litCount){
 					data->tseitinClauseCount += litCount + 1; // disjunction between every literal and negated gate, plus one containing every literal negated
 				}else{
-					die("TODO: Truth constants not supported!");
+					die("Empty AND gate should have been optimized away");
 				}
 			}else if(g->type == OR){
 				if(litCount){
 					data->tseitinClauseCount += litCount + 1; // disjunction between every literal negated and gate, plus one containing every literal and gate negated
 				}else{
-					die("TODO: Truth constants not supported!");
+					die("Empty OR gate should have been optimized away");
 				}
 			}else if(g->type == XOR){
 				data->tseitinClauseCount += 4;
@@ -597,6 +635,30 @@ void traverseTree(){
 		currentVL = currentVL->next;
 		// TODO: maybe free?
 	}while(currentVL);
+}
+
+// prenexTree assumes that gateVars are ordered so that no gate requires another defined later in the list
+// in other words: having the same condition as QCIR
+void prenexTree(){
+	if(data->outputVar->gateDefinition == NULL){
+		return;
+	}
+	varList *current = data->gateVars, *previous = NULL;
+	gate * g;
+	while(current){
+		if(current->variable->alias == 0){ // gate irrelevant
+			if(previous){
+				previous->next = previous->next->next;
+			}
+			freeVar(current->variable);
+			current = current->next;
+			free(current);
+		}else{
+			g = current->variable->gateDefinition;
+			//if(g->type != TRUE)
+			//if(g->)
+		}
+	}
 }
 
 /*
@@ -807,7 +869,6 @@ int main(int argc, char **argv){
 		die("Could not allocate memory");
 	}
 	strcpy(varFormat, "%31[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]"); // ascii letters, digits and underscores
-
 	
 	parseQCIR(input, fsize);
 	free(input);
