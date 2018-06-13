@@ -84,7 +84,7 @@ int checkCorrectMatch(const char *str)
 /*
  * fCheckNewline checks if a newline or EOF follows, terminates program otherwise
  * 
- * returns: -1 if EOF reached
+ * returns: EOF if EOF reached
  */
 int fCheckNewline(){
 	char auxChar;
@@ -511,6 +511,88 @@ void parseQCIR(char *inputString, long fsize)
 			if(g->literals == NULL && g->type == OR){
 				g->type = FALSE;
 			}
+		}else if(strcmp(word, "forall" ) == 0 || strcmp(word, "FORALL") == 0 || strcmp(word, "exists" ) == 0 || strcmp(word, "EXISTS") == 0){
+			char type;
+			if(strcmp(word, "forall" ) == 0 || strcmp(word, "FORALL") == 0){
+				type = FORALL;
+			}else{ 
+				type = EXISTS;
+			}
+			g = defineGateVar(v, type);
+			varList *newVars = NULL;
+			var *newVar;
+			fscanExpectedChar('(');
+			if(parseVariable()){
+				//getVarVS(data, word);
+				if(addExistingVarQB(&(g->localPrefix), type) == NULL){
+					if((newVar = createVar(word))){
+						addVarVL(&newVars, newVar);
+					}else{
+						die("Memory initialization failed.");
+					}
+				}
+				while(fscanfPlus("%1[,]")){ // while a comma follows, a variable must also!
+					if(parseVariable()){
+						if(addExistingVarQB(&(g->localPrefix), type) == NULL){
+							if((newVar = createVar(word))){
+								addVarVL(&newVars, newVar);
+							}else{
+								die("Memory initialization failed.");
+							}
+						}
+						
+					}else{
+						die("Parsing failed at line %lu: variable name expected after ','", lineCount);
+					}
+				}
+				fscanExpectedChar(';');
+				if(parseLiteral(&sign)){
+					if((newVar = getVarVS(data, word))){
+						if(newVar->gateDefinition == NULL){
+							if(getVarQB(g->localPrefix, newVar->name)){
+								// literal is a free variable that is present in quantification -> constant
+								if(type == FORALL){
+									g->type = FALSE;
+								}else{
+									g->type = TRUE;
+								}
+							}else{
+								// literal is a free variable that is not present in quantification -> PASS gate
+								g->type = PASS;
+								addLitToGate(g, sign, newVar, 0);
+							}
+							freeQB(g->localPrefix);
+							g->localPrefix = NULL;
+						}else{
+							// literal is a gate variable, proceed as normal
+							addLitToGate(g, sign, newVar, 0);
+						}
+					}else{
+						freeQB(g->localPrefix);
+						g->localPrefix = NULL;
+						// literal is a previously undefined free variable
+						if(getVarVL(newVars, word)){
+							// literal is a free variable that is present in quantification -> constant
+							if(type == FORALL){
+								g->type = FALSE;
+							}else{
+								g->type = TRUE;
+							}
+						}else{
+							// literal is a free variable that is not present in quantification -> PASS gate
+							g->type = PASS;
+							newVar = addUniqueFreeVar();
+							addLitToGate(g, sign, newVar, 1);
+						}
+					}
+					
+					deepFreeVL(newVars); // new vars not needed
+				}else{
+					die("Parsing failed at line %lu: literal expected after ';'", lineCount);
+				}
+			}else{
+				die("Parsing failed at line %lu: variable name expected after '('", lineCount);
+			}
 		}else if(strcmp(word, "xor" ) == 0 || strcmp(word, "XOR") == 0){ // 'xor' gate
 			char error = 1;
 			g = defineGateVar(v, XOR); // add definition
@@ -563,15 +645,14 @@ void parseQCIR(char *inputString, long fsize)
 		addUniqueGateVar(v);
 		//fCheckNewline();
 	}
-	
-	// !!! Adds gate vars to innermost quantifier block, existentially quantified !!!
-	quantifyGateVars();
 }
 
 /*
  * traverseTree starts from the gate with the same name as defined in output(),
  * marking all reached variables (alias = ULONG_MAX) and counting the amount of
  * resulting clauses (according to Tseitin)
+ * 
+ * Also replaces EXISTS and FORALL gates with a direct reference.
  */
 void traverseTree(){
 	varList *vlHead = NULL;
@@ -596,6 +677,75 @@ void traverseTree(){
 	lllHead->next = NULL;
 	lllTail = lllHead;
 	currentlll = lllHead;*/
+	
+	g = currentVar->gateDefinition;
+	while(g && (g->type == EXISTS || g->type == FORALL || g->type == PASS)){
+		if(g->literals->variable->gateDefinition){
+			qBlock *innerQB = g->literals->variable->gateDefinition->localPrefix;
+			iteratorQB *it = newQBiterator(innerQB);
+			var *v;
+			while((v = nextVarQB(it))){
+				if(detectConflict(v, g)){
+					removeVarQB(&(g->localPrefix), v);
+				}
+			}
+			g->literals->variable->gateDefinition->localPrefix = mergeQB(g->localPrefix, innerQB);
+			currentVar = g->literals->variable; // redirect reference
+			multiplySign(&(data->outputSign), g->literals->sign); // update sign
+			g = currentVar->gateDefinition;
+		}else{
+			data->prefix = mergeQB(data->prefix, g->localPrefix);
+			currentVar = g->literals->variable;
+			multiplySign(&(data->outputSign), g->literals->sign); // update sign
+			g = currentVar->gateDefinition;
+			break;
+		}
+	}
+	if(g){
+		if(g->type == TRUE || g->type == FALSE){
+			if(g->literals){
+				freeLL(g->literals);
+				g->literals = NULL;
+			}
+		}else{ // add prefix to output variable if it is a gate
+			iteratorQB *it = newQBiterator(data->prefix);
+			var *v;
+			while((v = nextVarQB(it))){
+				if(detectConflict(v, g)){
+					removeVarQB(&(data->prefix), v);
+				}
+			}
+			g->localPrefix = mergeQB(data->prefix, g->localPrefix);
+		}
+	}else{
+		char hit = 0;
+		qBlock *qb = data->prefix;
+		varList *vl;
+		if(qb){
+			do{
+				vl = qb->variables;
+				while(vl){
+					if(vl->variable == currentVar){
+						if(qb->type == EXISTS){
+							defineGateVar(currentVar, TRUE); // exists x (x) -> TRUE
+						}else{
+							defineGateVar(currentVar, FALSE); // forall x (x) -> FALSE
+						}
+						hit = 1;
+						break;
+					}
+					vl = vl->next;
+				}
+				if(hit){
+					break;
+				}
+				qb = qb->next;
+			}while(qb != data->prefix);
+		}
+		freeQB(data->prefix);
+		data->prefix = NULL;
+	}
+	
 	addVarVL(&vlHead, currentVar);
 	vlTail = vlHead;
 	currentVL = vlHead;
@@ -610,6 +760,29 @@ void traverseTree(){
 			ll = g->literals;
 			litCount = 0; // number of literals
 			while(ll){ // add all variables used in this gate to list to be traversed
+				gate *litGate = ll->variable->gateDefinition;
+				while(litGate){
+					if(litGate->type == EXISTS || litGate->type == FORALL){ // chain of quantifier blocks, merge
+						if(litGate->literals->variable->gateDefinition){
+							qBlock *innerQB = litGate->literals->variable->gateDefinition->localPrefix;
+							iteratorQB *it = newQBiterator(innerQB);
+							var *v;
+							while((v = nextVarQB(it))){
+								if(detectConflict(v, litGate)){
+									removeVarQB(&(litGate->localPrefix), v);
+								}
+							}
+							litGate->literals->variable->gateDefinition->localPrefix = mergeQB(litGate->localPrefix, innerQB);
+							ll->variable = litGate->literals->variable; // redirect reference
+							multiplySign(&(ll->sign), litGate->literals->sign); // update sign
+							litGate = ll->variable->gateDefinition;
+						}else{
+							die("EXISTS/FORALL gate without a literal! (traverseTree)");
+						}
+					}else{
+						break;
+					}
+				}
 				addVarVLTail(&vlTail, ll->variable);
 				++litCount;
 				ll = ll->next;
@@ -637,36 +810,15 @@ void traverseTree(){
 	}while(currentVL);
 }
 
-// prenexTree assumes that gateVars are ordered so that no gate requires another defined later in the list
-// in other words: having the same condition as QCIR
-void prenexTree(){
-	if(data->outputVar->gateDefinition == NULL){
-		return;
-	}
-	varList *current = data->gateVars, *previous = NULL;
-	gate * g;
-	while(current){
-		if(current->variable->alias == 0){ // gate irrelevant
-			if(previous){
-				previous->next = previous->next->next;
-			}
-			freeVar(current->variable);
-			current = current->next;
-			free(current);
-		}else{
-			g = current->variable->gateDefinition;
-			//if(g->type != TRUE)
-			//if(g->)
-		}
-	}
-}
-
 /*
  * printPrefixQDIMACS prints the prefix of the parsed data in QDIMACS format
  */
 void printPrefixQDIMACS(){
 	qBlock *currentQB = data->prefix;
 	varList *currentVL;
+	if(currentQB == NULL){
+		return;
+	}
 	do{
 		if(currentQB->type == EXISTS){
 			printf("e ");
@@ -696,6 +848,16 @@ void printQDIMACS(){
 	printf("c formula converted from %s\n", format);
 	printf("c Thank you for your mercy and grace, Jesus!\n");
 	printf("p cnf %lu %lu\n", data->tseitinVariableCount, data->tseitinClauseCount); // problem line
+	if(data->outputVar->gateDefinition){
+		char type = data->outputVar->gateDefinition->type;
+		if((type == TRUE && data->outputSign == 1) || (type == FALSE && data->outputSign == 0)){
+			printf("e 1 0\n1 0\n");
+			return;
+		}else if((type == FALSE && data->outputSign == 1) || (type == TRUE && data->outputSign == 0)){
+			printf("a 1 0\n1 0\n");
+			return;
+		}
+	}
 	printPrefixQDIMACS(); // prefix
 	if(data->outputSign){ // root literal positive
 		printf("%lu 0\n", data->outputVar->alias);
@@ -820,40 +982,7 @@ void printQDIMACS(){
 	}
 }
 
-int main(int argc, char **argv){
-	FILE *fpIn;
-	
-	if (argc < 2){
-		printf("usage: %s <input_filename>", argv[0]);
-		return 0;
-	}
-	
-	fpIn = fopen(argv[1], "r");
-	if(fpIn == NULL){
-		die("Could not open input file.");
-	}
-	
-	char *input;
-	long fsize;
-	
-	// load file at once to minimize hard disk operations
-	fseek(fpIn, 0, SEEK_END);
-	fsize = ftell(fpIn);
-	rewind(fpIn);
-
-	input = malloc(fsize + 1);
-	if(input == NULL){
-		die("Could not allocate memory according to file size.");
-	}
-	if(fread(input, fsize, 1, fpIn) < 1){
-		if(fread(input, fsize, 1, fpIn) < 1){
-			die("Reading file failed.");
-		}
-	}
-	
-	fclose(fpIn);
-	input[fsize] = 0;
-	
+void initData(){
 	// initialize data structure
 	data = malloc(sizeof(varSets)); // define variable pool
 	if(data){
@@ -869,26 +998,139 @@ int main(int argc, char **argv){
 		die("Could not allocate memory");
 	}
 	strcpy(varFormat, "%31[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]"); // ascii letters, digits and underscores
+}
+
+// used for testing
+void translate(char *input, long fsize){
+	// initialize data structure
+	initData();
 	
 	parseQCIR(input, fsize);
-	free(input);
 	
 	traverseTree();
-	indexVars();
 	if(declaredVariableCount){
 		if(declaredVariableCount != data->tseitinVariableCount){
 			die("Declared amount of variables(%lu) differs from actual amount(%lu)!", declaredVariableCount, data->tseitinVariableCount);
 		}
 	}
 	
+	prenexTree();
+	
+	// !!! Adds gate vars to innermost quantifier block, existentially quantified !!!
+	quantifyGateVars();
+	printPrefix();
+	printGates();
+	indexVars();
+	
+	freopen("test_output.txt", "w", stdout);
+	printQDIMACS();
+	fflush(stdout);
+	freopen("/dev/tty", "w", stdout); /*for gcc, ubuntu*/
+	
+	freeResources(); // free variable storage
+}
+
+// checks if file has exactly content after first two comment lines
+int checkFileContent(char *filename, char *content){
+	FILE *fpIn = fopen(filename, "r");
+	if(fpIn == NULL){
+		perror("Could not open input file. (checkFileContent)");
+		exit(EXIT_FAILURE);
+	}
+	
+	char *input;
+	long fsize;
+	
+	// load file at once to minimize hard disk operations
+	fseek(fpIn, 0, SEEK_END);
+	fsize = ftell(fpIn);
+	rewind(fpIn);
+
+	input = malloc(fsize + 1);
+	if(input == NULL){
+		perror("Could not allocate memory according to file size. (checkFileContent)");
+		exit(EXIT_FAILURE);
+	}
+	if(fread(input, fsize, 1, fpIn) < 1){
+		if(fread(input, fsize, 1, fpIn) < 1){
+			perror("Reading file failed or file empty. (checkFileContent)");
+			exit(EXIT_FAILURE);
+		}
+	}
+	
+	fclose(fpIn);
+	input[fsize] = 0;
+	
+	if(strcmp(input+78, content)){ // first two lines are exactly 78 bytes IF format is QCIR-14
+		return 0;
+	}else{
+		return 1;
+	}
+}
+/*
+int main(int argc, char **argv){
+	FILE *fpIn;
+	
+	if (argc < 2){
+		printf("usage: %s <input_filename>", argv[0]);
+		return 0;
+	}
+	
+	fpIn = fopen(argv[1], "r");
+	if(fpIn == NULL){
+		perror("Could not open input file.");
+		exit(EXIT_FAILURE);
+	}
+	
+	char *input;
+	long fsize;
+	
+	// load file at once to minimize hard disk operations
+	fseek(fpIn, 0, SEEK_END);
+	fsize = ftell(fpIn);
+	rewind(fpIn);
+
+	input = malloc(fsize + 1);
+	if(input == NULL){
+		perror("Could not allocate memory according to file size.");
+		exit(EXIT_FAILURE);
+	}
+	if(fread(input, fsize, 1, fpIn) < 1){
+		if(fread(input, fsize, 1, fpIn) < 1){
+			perror("Reading file failed or file empty.");
+			exit(EXIT_FAILURE);
+		}
+	}
+	
+	fclose(fpIn);
+	input[fsize] = 0;
+	
+	// initialize data structure
+	initData();
+	
+	parseQCIR(input, fsize);
+	free(input);
+	
+	traverseTree();
+	if(declaredVariableCount){
+		if(declaredVariableCount != data->tseitinVariableCount){
+			die("Declared amount of variables(%lu) differs from actual amount(%lu)!", declaredVariableCount, data->tseitinVariableCount);
+		}
+	}
+	prenexTree();
+	
+	// !!! Adds gate vars to innermost quantifier block, existentially quantified !!!
+	quantifyGateVars();
+	indexVars();
+	
 	 //Test printing
-	printData();
+	*printData();
 	printf("Tseitin clause count: %lu\n", data->tseitinClauseCount);
 	printf("Tseitin variable count: %lu\n\n", data->tseitinVariableCount);
-	
+	*
 	printQDIMACS();
 	
 	freeResources(); // free variable storage
 	
 	return 0;
-}
+}*/

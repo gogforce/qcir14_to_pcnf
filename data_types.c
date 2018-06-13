@@ -1,7 +1,75 @@
 #include <data_types.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+
+// swap target if modifier is negative (0)
+void multiplySign(char *target, char modifier){
+	if(modifier == 0){
+		if(*target){
+			*target = 0;
+		}else{
+			*target = 1;
+		}
+	}
+}
+void printLL(litList *current);
+void printVL(varList *current);
+
+iteratorQB *newQBiterator(qBlock *qb){
+	if(qb == NULL){
+		return NULL;
+	}
+	iteratorQB *result = malloc(sizeof(iteratorQB));
+	if(result == NULL){
+		die("Runtime error occured at memory initialization (newQBiterator)");
+	}
+	result->vl = qb->variables;
+	result->qb = qb;
+	result->qbHead = NULL;
+	return result;
+}
+var *nextVarQB(iteratorQB *it){
+	if(it == NULL){
+		return NULL;
+	}
+	if((it->qb == it->qbHead)){ // iteration reached beginning
+		free(it);
+		return NULL;
+	}
+	var *result = it->vl->variable;
+	if(it->vl->next){
+		it->vl = it->vl->next;
+	}else{
+		if(it->qbHead == NULL){
+			it->qbHead = it->qb;
+		}
+		it->qb = it->qb->next;
+		it->vl = it->qb->variables;
+	}
+	return result;
+}
+varList *nextVarListQB(iteratorQB *it){
+	if(it == NULL){
+		return NULL;
+	}
+	if((it->qb == it->qbHead)){ // iteration reached beginning
+		free(it);
+		return NULL;
+	}
+	varList *result = it->vl;
+	if(it->vl->next){
+		it->vl = it->vl->next;
+	}else{
+		if(it->qbHead == NULL){
+			it->qbHead = it->qb;
+		}
+		it->qb = it->qb->next;
+		it->vl = it->qb->variables;
+	}
+	return result;
+}
 
 // Search in a list for a variable that has given name, return pointer to it, NULL if no match found.
  var *getVarVL( varList *list, char *name){
@@ -42,6 +110,60 @@
 		}
 	}
 	return NULL; // no match found
+}
+void removeVarQB(qBlock **head, var *v){
+	if(*head == NULL){
+		return;
+	}
+	qBlock **qb = head;
+	varList **vl;
+	
+	do{
+		vl = &((*qb)->variables);
+		while(*vl){
+			if((*vl)->variable == v){
+				*vl = (*vl)->next;
+				if((*qb)->variables == NULL){ // QB block became empty
+					if((*qb)->next == *qb){ // only one block
+						*head = NULL;
+					/*}else if((*qb)->next->next == *qb) // only 2 blocks
+						qBlock *qb2 = (*qb)->next;
+						qb2->next = qb2;
+						qb2->prev = qb2;
+						*head = qb2;*/
+					}else if((*qb)->next == *head){
+						qBlock *qb2 = (*qb)->prev;
+						qb2->next = *head;
+						(*head)->prev = qb2;
+					}else if((*qb) == *head){
+						qBlock *qb2 = (*qb)->next;
+						qb2->prev = (*qb)->prev;
+						(*qb)->prev->next = qb2;
+						*head = qb2;
+					}else{ // merge previous and next blocks
+						qBlock *qb2 = (*qb)->prev;
+						varList *v = qb2->variables;
+						while(v->next){
+							v = v->next;
+						}
+						v->next = (*qb)->next->variables;
+						/*vl = &(qb2->variables);
+						while(*vl){
+							vl = &((*vl)->next);
+						}
+						*vl = (*qb)->next->variables;*/
+						qb2->next = qb2->next->next->next;
+						qb2->next->prev = qb2;
+						//free((*qb)->next); freeing here messes up the other blocks?!
+					}
+					//free(*qb); freeing here messes up the other blocks?!
+				}
+				return;
+			}
+			vl = &((*vl)->next);
+		}
+		qb = &((*qb)->next);
+	}while(*qb != *head);
 }
 
  var *getVarVS( varSets *set, char *name){
@@ -254,7 +376,7 @@ gate *defineGateVar(var *target, char type){
 		}
 		result->localFreeVars = NULL;
 		result->localPrefix = NULL;
-		result->localScope = NULL;
+		//result->localScope = NULL;
 		result->uses = 0;
 		if(target->gateDefinition){
 			freeLL(target->gateDefinition->literals);
@@ -349,15 +471,12 @@ var *copyTree(var *root){
 	if(root->gateDefinition == NULL){
 		return root;
 	}
-	//printf("Copying %s\n", root->name);
 	var *result = createVar(root->name);
 	gate *g = defineGateVar(result, root->gateDefinition->type);
 	g->uses = 1;
 	g->subtreeSize = root->gateDefinition->subtreeSize;
 	g->localFreeVars = root->gateDefinition->localFreeVars;
-	g->localScope = root->gateDefinition->localScope;
-	//printf("%p\n",root->gateDefinition->localPrefix);
-	//printf("Problem before copyQB?\n");
+	//g->localScope = root->gateDefinition->localScope;
 	g->localPrefix = copyQB(root->gateDefinition->localPrefix);
 	// copy literals
 	litList *current = root->gateDefinition->literals;
@@ -370,7 +489,6 @@ var *copyTree(var *root){
 	newTail = newHead;
 	newCurrent = newHead;
 	while(1){
-		//printf("Problem while populating literals?\n");
 		newCurrent->sign = current->sign;
 		newCurrent->variable = copyTree(current->variable);
 		newTail = newCurrent;
@@ -411,7 +529,7 @@ void addLitToGate(gate *g, char sign, var *atom, char isNewVar){
 			}
 			current = current->next;
 		}
-	
+		
 		if(duplicate == 0){
 			while(atom->gateDefinition != NULL && atom->gateDefinition->type == PASS){ // reach through PASS gates
 				if(atom->gateDefinition->literals->sign == sign){
@@ -544,16 +662,13 @@ void addLitToGate(gate *g, char sign, var *atom, char isNewVar){
 			addVarLLTail(&(g->literals), sign, atom);
 		}
 	}else if(g->type == ITE){  // ite gate: ordering of literals matters
-		if(g->literals && g->literals->variable->gateDefinition){
-			char previousType = g->literals->variable->gateDefinition->type;
-			if((previousType == FALSE && g->literals->sign > 0)||(previousType == TRUE && g->literals->sign == 0)){
-				if(litCount == 1){// ITE(FALSE,x,_) -> PASS()
-				g->type = PASS;
-				freeLL(g->literals);
-				g->literals = NULL;
-				}else{
-					die("Bad ITE gate content, FALSE constant and another variable (addLitToGateAssumeFree)");
-				}
+		if(g->literals && g->literals->variable->gateDefinition && ((g->literals->variable->gateDefinition->type == FALSE && g->literals->sign > 0)||(g->literals->variable->gateDefinition->type == TRUE && g->literals->sign == 0))){
+			if(litCount == 1){// ITE(FALSE,x,_) -> PASS()
+			g->type = PASS;
+			freeLL(g->literals);
+			g->literals = NULL;
+			}else{
+				die("Bad ITE gate content, FALSE constant and another variable (addLitToGateAssumeFree)");
 			}
 		}else if(duplicate){
 			if(duplicateIndex == 1){
@@ -621,6 +736,8 @@ void addLitToGate(gate *g, char sign, var *atom, char isNewVar){
 		}else{
 			addVarLLTail(&(g->literals), sign, atom);
 		}
+		printf("ITE %s\n", atom->name);
+		printLL(g->literals);
 	}else if(g->type == TRUE || g->type == FALSE){
 		//die("Adding a literal to a truth constant gate pointless (addLitToGateAssumeFree)");
 	}else if(g->type == PASS){
@@ -647,20 +764,28 @@ var *addLitToGateAssumeFree(gate *g, char sign){
 	return result;
 }
 
-// create and add a new variable with given name and quantification to prefix,
+// add a variable with given name and quantification to prefix, create new one if toAdd == NULL
 // added to the existing innermost block if it has the same quantification, creating a new block otherwise
-void addVarQB(qBlock **head, char quantifier){
+void addVarQB(qBlock **head, char quantifier, var *toAdd){
+	if(toAdd == NULL){
+		toAdd = createVar(word);
+		if(toAdd == NULL){
+			die("Failed to create a new variable (addVarQB)");
+		}
+	}
 	if(*head){ // QBlock alredy exists
 		qBlock *tail = (*head)->prev;
 		if(tail){ // innermost block
 			if(tail->type == quantifier){ // innermost block has the same quantification
-				addNewVarVL(&(tail->variables), word);
+				//addNewVarVL(&(tail->variables), word);
+				addVarVL(&(tail->variables), toAdd);
 			}else{ // new innermost block must be initialized
 				qBlock *newBlock = malloc(sizeof(qBlock));
 				if(newBlock){
 					newBlock->type = quantifier;
 					newBlock->variables = NULL;
-					addNewVarVL(&(newBlock->variables), word);
+					//addNewVarVL(&(newBlock->variables), word);
+					addVarVL(&(newBlock->variables), toAdd);
 					newBlock->next = *head;
 					newBlock->prev = tail;
 					(*head)->prev = newBlock;
@@ -677,7 +802,8 @@ void addVarQB(qBlock **head, char quantifier){
 		if(*head){
 			(*head)->type = quantifier;
 			(*head)->variables = NULL;
-			addNewVarVL(&((*head)->variables), word);
+			//addNewVarVL(&((*head)->variables), word);
+			addVarVL(&((*head)->variables), toAdd);
 			(*head)->next = *head;
 			(*head)->prev = *head;
 		}else{
@@ -688,7 +814,19 @@ void addVarQB(qBlock **head, char quantifier){
 // additionally checks and terminates if a var with such name already exists in data
 void addUniqueVarQB(char quantifier){
 	checkUniqueness(word);
-	addVarQB(&(data->prefix), quantifier);
+	addVarQB(&(data->prefix), quantifier, NULL);
+}
+// checks if a free variable with given name already encountered and add it,
+// return pointer to it, NULL otherwise
+var *addExistingVarQB(qBlock **qb, char quantifier){
+	var *toAdd = getVarVL(data->freeVars, word);
+	if(toAdd == NULL){
+		toAdd = getVarQB(data->prefix, word);
+	}
+	if(toAdd){
+		addVarQB(qb, quantifier, toAdd);
+	}
+	return toAdd;
 }
 // append list of gate variables to innermost quantifier block, existentially quantified
 void quantifyGateVars(){
@@ -724,6 +862,343 @@ void quantifyGateVars(){
 	}
 }
 
+// mergeQB unites two QBs into one, the head of the first is the head of the union
+qBlock *mergeQB(qBlock *qb1, qBlock *qb2){
+	if(qb1 == NULL){
+		return qb2;
+	}else if(qb2 == NULL){
+		return qb1;
+	}
+	
+	qBlock *qb1tail = qb1->prev, *qb2tail = qb2->prev;
+	if(qb1tail->type == qb2->type){
+		varList *vl = qb1tail->variables;
+		while(vl->next){
+			vl = vl->next;
+		}
+		vl->next = qb2->variables;
+		if(qb2 == qb2tail){ // qb2 has only one block
+			return qb1;
+		}
+		qb1tail->next = qb2->next;
+		qb2->next->prev = qb1tail;
+	}else{
+		qb1tail->next = qb2;
+		qb2->prev = qb1tail;
+	}
+	qb2tail->next = qb1;
+	qb1->prev = qb2tail;
+	return qb1;
+}
+
+// detectConflict checks if v1 is found in prefix or free vars of g2
+// returns 1 on match, returns 0 otherwise 
+char detectConflict(var *v1, gate *g2){
+	var *v2;
+	varList *f2;
+	iteratorQB *it = newQBiterator(g2->localPrefix);
+	while((v2 = nextVarQB(it))){ // iterate over prefix of g2
+		if(v1 == v2){ // Conflict between a quantified var in g1 and a quantified var in g2 -> replace in g1
+			// no check for case FORALL+OR / EXISTS+AND
+			free(it);
+			return 1;
+		}
+	}
+	f2 = g2->localFreeVars;
+	while(f2){
+		if(v1 == f2->variable){ // Conflict between a quantified var in g1 and a free var in g2 -> replace in g1
+			return 1;
+		}
+		f2 = f2->next;
+	}
+	return 0;
+}
+// sortOutConflictsAndMergeFreeVars checks for conflicts between variables of a gate and replaces vars
+// also prepares list of all free vars of this gate
+void sortOutConflictsAndMergeFreeVars(gate *g){ //, gate *g1, gate *g2
+	litList *ll1 = g->literals;
+	litList *ll2;
+	gate *g1, *g2;
+	iteratorQB *it1 = NULL;
+	varList *vl = NULL;
+	varList *f1;
+	varList **fvl;
+	char hit = 0;
+	
+	while(ll1){ // add all free vars from lilist to list of local free vars of this gate
+		if(ll1->variable->gateDefinition == NULL){ // free variable
+			addVarVL(&(g->localFreeVars), ll1->variable);
+		}
+		ll1 = ll1->next;
+	}
+	ll1 = g->literals;
+	while(ll1){
+		//printf("1e %s\n", g->variable->name);
+		g1 = ll1->variable->gateDefinition;
+		//printf("%s\n", ll1->variable->name);
+		if(g1){ // gate variable
+			it1 = newQBiterator(g1->localPrefix);
+			while((vl = nextVarListQB(it1))){
+				//printf("2e %s\n", g->variable->name);
+				f1 = g->localFreeVars;
+				while(f1){
+					if(vl->variable == f1->variable){
+						replaceVar(g1, vl, NULL);
+						hit = 1;
+						break;
+					}
+					f1 = f1->next;
+				}
+				
+				if(hit == 0){
+					ll2 = ll1->next;
+					while(ll2){
+						g2 = ll2->variable->gateDefinition;
+						if(g2){ // gate variable
+							if(detectConflict(vl->variable, g2)){
+								replaceVar(g1, vl, NULL);
+								hit = 1;
+								break;
+							}
+						}
+						ll2 = ll2->next;
+					}
+				}
+				
+				if(hit == 0){
+					removeVarQB(&(g->localPrefix), vl->variable); // if quantifed variable was not
+				}else{
+					hit = 0;
+				}
+				//printf("2o %s\n", g->variable->name);
+			}
+			
+			fvl = &(g1->localFreeVars);
+			while(*fvl){
+				f1 = g->localFreeVars;
+				while(f1){
+					if((*fvl)->variable == f1->variable){
+						*fvl = (*fvl)->next;
+						hit = 1;
+						break;
+					}
+					f1 = f1->next;
+				}
+				if(hit == 0){
+					fvl = &((*fvl)->next);
+				}else{
+					hit = 0;
+				}
+			}
+			*fvl = g->localFreeVars; // append global list to end of local list and make it global
+			g->localFreeVars = g1->localFreeVars;
+		}
+		//printf("1o %s\n", g->variable->name);
+		ll1 = ll1->next;
+	}
+	hit = 0;
+	var *v;
+	vl = NULL;
+	f1 = NULL;
+	it1 = newQBiterator(g->localPrefix); // lastly, check total free against head QB and remove vars that are being quantified/vars that do not appear
+	while((v = nextVarQB(it1))){
+		fvl = &(g->localFreeVars);
+		while(*fvl){
+			if((*fvl)->variable == v){
+				*fvl = (*fvl)->next;
+				hit = 1;
+				break;
+			}
+			fvl = &((*fvl)->next);
+		}
+		if(hit == 0){
+			if(vl == NULL){
+				addVarVL(&vl, v);
+				f1 = vl;
+			}else{
+				addVarVLTail(&f1, v);
+			}
+		}else{
+			hit = 0;
+		}
+	}
+	f1 = vl;
+	while(f1){
+		removeVarQB(&(g->localPrefix), f1->variable);
+		f1 = f1->next;
+	}
+	ll1=g->literals;
+	freeVL(vl);
+	/*while(ll1){
+		if(ll1->variable->gateDefinition){
+			printf("while prenexing %s, %s prefix:\n", g->variable->name, ll1->variable->name);
+			printQB(ll1->variable->gateDefinition->localPrefix);
+		}
+		ll1 = ll1->next;
+	}*/
+	//printf("Free %s:", g->variable->name);
+	//printVL(g->localFreeVars);
+	//printf("\n");
+}
+	
+	/*
+	it2 = newQBiterator(g2->localPrefix);
+	while(vl2 = nextVarListQB(it2)){ // iterate over prefix of g2
+		v2 = vl2->variable;
+		it1 = newQBiterator(g1->localPrefix);
+		while(v1 = nextVarQB(it1)){
+			if(v1 == v2){ // Conflict between a quantified var in g1 and a quantified var in g2 -> replace in g2
+				// no check for case FORALL+OR / EXISTS+AND
+				replaceVar(g2, vl2, NULL);
+				hit = 1;
+				free(it1);
+				break;
+			}
+		}
+		if(hit == 0){
+			f1 = g1->localFreeVars;
+			while(f1){
+				if(f1->variable == v2){ // Conflict between a free var in g1 and a quantified var in g2 -> replace in g2
+					replaceVar(g2, vl2, NULL);
+					break;
+				}
+				f1 = f1->next;
+			}
+		}else{
+			hit = 0;
+		}
+	}
+	//}
+	vl2 = g2->localFreeVars;
+	while(vl2){
+		v2 = vl2->variable;
+		it1 = newQBiterator(g1->localPrefix);
+		while(v1 = nextVarQB(it1)){
+			if(v1 == v2){ // Conflict between a quantified var in g1 and a free var in g2 -> find relevant gate and replace
+				litList *ll = g->literals;
+				while(ll){
+					if(ll->variable->gateDefinition){
+						it1 = newQBiterator(ll->variable->gateDefinition->localPrefix);
+						while(f1 = nextVarListQB(it1)){
+							if(f1->variable == v2){
+								replaceVar(ll->variable->gateDefinition, f1, NULL);
+								hit = 1;
+								free(it1);
+								break;
+							}
+						}
+						if(hit){
+							break;
+						}
+					}
+					ll = ll->next;
+				}
+				//if(hit) break; ??
+			}
+		}
+		if(hit == 0){
+			f1 = g1->localFreeVars;
+			while(f1){
+				if(f1->variable == v2){ // Conflict between a free var in g1 and a free var in g2 -> remove in g2
+					varList **ref = &(g2->localFreeVars);
+					while(*ref){
+						if(*ref->variable == v2){
+							*ref = *ref->next;
+							break;
+						}
+						ref = &(*ref->next);
+					}
+					break;
+				}
+				f1 = f1->next;
+			}
+		}else{
+			hit = 0;
+		}
+		vl2 = vl2->next;
+	}*/
+
+// sorts out conflicts in g and than unites all prefixes (left outermost, right innermost)
+void prenexGateSimple(gate *g){
+	//printf("prenexing %s\n", g->variable->name);
+	sortOutConflictsAndMergeFreeVars(g);
+	//printf("sorted %s\n", g->variable->name);
+	litList *ll = g->literals;
+	while(ll){
+		if(ll->variable->gateDefinition){
+			g->localPrefix = mergeQB(g->localPrefix, ll->variable->gateDefinition->localPrefix);
+		}
+		ll = ll->next;
+	}
+	printf("%s prenexed:\n", g->variable->name);
+	printQB(g->localPrefix);
+}
+
+// replaces occurences of toBeReplaced in subtree scope with replaceWith
+void replaceVarRecursive(gate *scope, var *toBeReplaced, var *replaceWith){
+	if(scope->type == TRUE || scope->type == FALSE){
+		return;
+	}
+	
+	litList *current = scope->literals;
+	while(current){
+		if(current->variable->gateDefinition){
+			replaceVarRecursive(current->variable->gateDefinition, toBeReplaced, replaceWith);
+		}else{
+			if(current->variable == toBeReplaced){
+				current->variable = replaceWith;
+			}
+		}
+		current = current->next;
+	}
+}
+// replaces occurences of toBeReplaced in subtree scope with replaceWith
+// also updates varList element toBeReplaced
+void replaceVar(gate *scope, varList *toBeReplaced, var *replaceWith){
+	if(replaceWith == NULL){
+		char *newName = malloc(sizeof(char)*(strlen(toBeReplaced->variable->name)+5));
+		if(newName){
+			sprintf(newName, "new.%s", toBeReplaced->variable->name);
+			replaceWith = createVar(newName);
+			replaceWith->alias = ULONG_MAX; // mark as visited
+		}else{
+			die("Runtime error occured at memory initialization (replaceVar)");
+		}
+	}
+	replaceVarRecursive(scope, toBeReplaced->variable, replaceWith);
+	toBeReplaced->variable = replaceWith;
+}
+
+// prenexTree assumes that gateVars are ordered so that no gate requires another defined later in the list
+// in other words: having the same condition as QCIR regarding order of gate definitions
+void prenexTree(){
+	gate * g = data->outputVar->gateDefinition;
+	if(g == NULL || g->type == TRUE || g->type == FALSE){ // no need of prenexing
+		return;
+	}
+	varList **current = &(data->gateVars);// *previous = NULL;
+	while(*current){
+		if((*current)->variable->alias == 0){ // gate irrelevant
+			*current = (*current)->next;
+			/*if(previous){
+				previous->next = previous->next->next;
+			}*/
+			//varList *aux = *current;
+			//current = &((*current)->next);
+			//freeVar(aux->variable);
+			//free(aux);
+		}else{
+			g = (*current)->variable->gateDefinition;
+			//if(g->type != TRUE && g->type != FALSE && g->type != EXISTS && g->type != FORALL){
+				prenexGateSimple(g);
+			//}
+			current = &((*current)->next);
+		}
+	}
+	data->prefix = data->outputVar->gateDefinition->localPrefix; // Updating global prefix
+	data->freeVars = data->outputVar->gateDefinition->localFreeVars; // Updating global free var list, needed for indexing
+}
+
 // go through all the relevant variables in the list and give them a new integer alias
 void indexVarVL(varList *list){
 	while(list != NULL){
@@ -735,15 +1210,20 @@ void indexVarVL(varList *list){
 		list = list->next;
 	}
 }
-// !!! if no relevant variable is encountered in a qBlock, it is freed and its predecessor and successor are merged !!!
 void indexVarQB(qBlock *qList){
-	qBlock *currentQ = qList, *emptyQB = NULL;
-	unsigned long aux;
+	qBlock *currentQ = qList; //*emptyQB = NULL;
+	//unsigned long aux;
 	
 	while(currentQ != NULL){
 
-		aux = data->tseitinVariableCount;
+		//aux = data->tseitinVariableCount;
 		indexVarVL(currentQ->variables);
+		/*
+		following block has a bug and it is also no longer needed
+		
+		intended usage: if no relevant variable is encountered in a qBlock,
+		it is freed and its predecessor and successor are merged
+		
 		if(aux == (data->tseitinVariableCount)){ // no relevant variable
 			if(emptyQB == NULL){ // first irrelevant block
 				emptyQB = currentQ; 
@@ -780,21 +1260,21 @@ void indexVarQB(qBlock *qList){
 				
 				emptyQB = NULL;
 			}
-		}
+		}*/
 		
 		currentQ = currentQ->next;
 		if(currentQ == qList){ // reached head again
 			break;
 		}
 	}
-	if(emptyQB){ // list ends with an irrelevant block
+	/*if(emptyQB){ // list ends with an irrelevant block
 		qBlock *tail = data->prefix->prev;
 		tail->next = emptyQB;
 		emptyQB->prev->next = data->prefix;
 		data->prefix->prev = emptyQB->prev;
 		emptyQB->prev = tail;
 		free(emptyQB);
-	}
+	}*/
 }
 // go through all the relevant variables and give them a new integer alias
 void indexVars(){
@@ -815,6 +1295,14 @@ void freeVar(var *v){
 	free(v);
 }
 void freeVL(varList *current){
+	varList *aux;
+	while(current){
+		aux = current;
+		current = current->next;
+		free(aux);
+	}
+}
+void deepFreeVL(varList *current){
 	varList *aux;
 	while(current){
 		if(current->variable){
@@ -853,9 +1341,27 @@ void freeQB(qBlock *current){
 		free(aux);
 	}
 }
+void deepFreeQB(qBlock *current){
+	qBlock *aux;
+	if(current){
+		if(current->prev){
+			current->prev->next = NULL; // break the cycle between first and last
+		}
+	}
+	while(current){
+		if(current->variables){
+			deepFreeVL(current->variables);
+		}else{
+			//die("Empty qBlock element encountered!");
+		}
+		aux = current;
+		current = current->next;
+		free(aux);
+	}
+}
 void freeVS(varSets *data){
-	freeVL(data->freeVars);
-	freeQB(data->prefix);
+	deepFreeVL(data->freeVars);
+	deepFreeQB(data->prefix);
 	//freeVL(data->gateVars); // freed at freeQB, because list is part of innermost EXISTS block
 	free(data->outputName);
 	free(data);
@@ -867,6 +1373,13 @@ void printVL(varList *current){
 		printf("%s ", current->variable->name);
 		current = current->next;
 	}
+}
+void printLL(litList *current){
+	while(current){
+		printf("%s ", current->variable->name);
+		current = current->next;
+	}
+	printf("\n");
 }
 void printFree(){
 	if(data->freeVars == NULL){
@@ -880,10 +1393,10 @@ void printFree(){
 void printQB(qBlock *head){
 	qBlock *current;
 	if(head == NULL){
+		printf("empty\n");
 		return;
 	}
 	current = head;
-	printf("Prefix:\n");
 	do{
 		printf("%d: ", current->type);
 		printVL(current->variables);
@@ -893,6 +1406,7 @@ void printQB(qBlock *head){
 }
 // print contents of quantifier prefix to stdout
 void printPrefix(){
+	printf("Prefix:\n");
 	printQB(data->prefix);
 }
 

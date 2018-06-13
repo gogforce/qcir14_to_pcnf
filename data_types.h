@@ -39,6 +39,11 @@ typedef struct qBlock{
 	struct qBlock* next;
 	struct qBlock* prev;
 }qBlock;
+typedef struct iteratorQB{
+	varList *vl;
+	qBlock *qb;
+	qBlock *qbHead;
+}iteratorQB;
 
 typedef struct gate{
 	var* variable; // pointer to name definition
@@ -47,7 +52,7 @@ typedef struct gate{
 	unsigned int subtreeSize; // longest path to a leaf, 0 means a constant
 	qBlock* localPrefix; // initialized only if it is a quantifier gate, later referencing the dynamic prefix
 	varList* localFreeVars; // list of free variables in the subtree
-	varList* localScope; // list of variables for which this subtree is exactly their scope
+	//varList* localScope; // list of variables for which this subtree is exactly their scope
 	unsigned int uses; // initially 0, incremented every time the gate is used inside the definition of another gate
 }gate;
 
@@ -80,6 +85,13 @@ char* word;
 void die(const char *fmt, ...);
 
 // --- PROVIDED FUNCTIONALITY --- //
+
+// swap target if modifier is negative (0)
+void multiplySign(char *target, char modifier);
+
+// used to iterate over variables of a qBlock
+iteratorQB *newQBiterator(qBlock *qb);
+var *nextVarQB(iteratorQB *it);
 
 // Search in a list for a variable that has given name, return pointer to it, NULL if no match found.
 var *getVarVL(varList *list, char *name);
@@ -120,43 +132,58 @@ litList *addVarLLHead(litList **list, char sign, var *variable);
 // returns new length of the list
 litList *addVarLLTail(litList **list, char sign, var *variable);
 //litList *addUniqueVarLL(litList **list, char *name); // additionally checks and terminates if a var with such name already exists in data
-
+// removeVarQB removes var v if found and updates reference if needed
+void removeVarQB(qBlock **head, var *v);
 // create and add a new unique free variable to data set
 var *addUniqueFreeVar();
 
 // upgrade a var with a gate definition, returns a pointer to newly created gate definition
 // if var already has a gate definition, it is freed and replaced with a new one
 gate *defineGateVar(var *target, char type);
-
 // add a new unique gate variable to data set;
 void addUniqueGateVar(var *toAdd);
 // add a new literal to a gate, assume a free variable if not already defined in data
 // returns a pointer to and if a new var was created and added to free()
-qBlock *copyQB(qBlock *toCopy);
-var *copyTree(var *root);
 void addLitToGate(gate *g, char sign, var *atom, char isNewVar);
 var *addLitToGateAssumeFree(gate *g, char sign);
-// create and add a new variable with given name and quantification to prefix,
+// add a variable with given name and quantification to prefix, create new one if toAdd == NULL
 // added to the existing innermost block if it has the same quantification, creating a new block otherwise
-void addVarQB(qBlock **head, char quantifier);
+void addVarQB(qBlock **head, char quantifier, var *toAdd);
 // additionally checks and terminates if a var with such name already exists in data
 void addUniqueVarQB(char quantifier);
+// checks if a free variable with given name already encountered and add it,
+// retun pointer to it
+var *addExistingVarQB(qBlock **qb, char quantifier);
+qBlock *copyQB(qBlock *toCopy);
+qBlock *mergeQB(qBlock *qb1, qBlock *qb2);
+// detectConflict checks if v1 is found in prefix or free vars of g2
+// returns 1 on match, returns 0 otherwise 
+char detectConflict(var *v1, gate *g2);
+
+var *copyTree(var *root);
+// prenexTree assumes that gateVars are ordered so that no gate requires another defined later in the list
+// in other words: having the same condition as QCIR regarding order of gate definitions
+void prenexTree();
 // append list of gate variables to innermost quantifier block, existentially quantified
 void quantifyGateVars();
-
+// replaces occurences of toBeReplaced in subtree scope with replaceWith
+void replaceVar(gate *scope, varList *toBeReplaced, var *replaceWith);
 // go through all the relevant variables and give them a new integer alias
 void indexVars();
 
 // free data structure
 void freeVar(var *);
 void freeVL(varList *);
+void deepFreeVL(varList *);
 void freeLL(litList *);
 void freeQB(qBlock *);
+void deepFreeQB(qBlock *);
 void freeVS(varSets *);
 
 // --- TEST FUNCTIONALITY --- //
 
 //print contents of quantifier prefix to stdout
+void printQB(qBlock *head);
 void printFree();
 void printPrefix();
 void printGates();
