@@ -472,11 +472,7 @@ void translate(char *input){
 	parseQCIR(input, strlen(input));
 	printf("parsed!\n");
 	traverseTree();
-	if(declaredVariableCount){
-		if(declaredVariableCount != data->tseitinVariableCount){
-			die("Declared amount of variables(%lu) differs from actual amount(%lu)!", declaredVariableCount, data->tseitinVariableCount);
-		}
-	}
+	printGates();
 	//printGates();
 	printf("traversed!\n");
 	prenexTree();
@@ -489,6 +485,11 @@ void translate(char *input){
 	
 	//printGates();
 	indexVars();
+	if(declaredVariableCount){
+		if(declaredVariableCount != data->tseitinVariableCount){
+			die("Declared amount of variables(%lu) differs from actual amount(%lu)!", declaredVariableCount, data->tseitinVariableCount);
+		}
+	}
 	
 	freopen("test_output.txt", "w", stdout);
 	printQDIMACS();
@@ -685,16 +686,97 @@ static char * test_prenexing_with_strategy(){
 	return 0;
 }
 
-static char * all_tests() {
-	//mu_run_test(test_add_literal_to_gate);
-	//mu_run_test(test_replace_var);
-	//mu_run_test(test_QB_iterator);
-	//mu_run_test(test_remove_var_QB);
-	//mu_run_test(test_total);
-	mu_run_test(test_prenexing_with_strategy);
+static char * test_cleansed_form(){
+	char* input;
+	
+	// only quantified once
+	input = "#QCIR-G14 4\n"
+	"forall(1)\n"
+	"output(4)\n"
+	"3=or(1,2)\n"
+	"4=exists(1,2)\n";
+	//translate(input);
+	
+	// either quantified or free
+	input = "#QCIR-G14 4\n"
+	"free(1)\n"
+	"output(4)\n"
+	"3=or(1,2)\n"
+	"4=exists(1,2)\n";
+	//translate(input);
+	
+	// all free vars must be declared in the free block
+	input = "#QCIR-G14 3\n"
+	"free(1)\n"
+	"output(3)\n"
+	"3=or(1,2)\n";
+	//translate(input);
+	
+	// quantifiers and logical operators only lowercase
+	input = "#QCIR-G14 4\n"
+	"forall(1)\n"
+	"output(4)\n"
+	"3=OR(1,2)\n"
+	"4=exists(1,2)\n";
+	//translate(input);
+	
+	input = "#QCIR-G14 4\n"
+	"FORALL(1)\n"
+	"output(4)\n"
+	"3=or(1,2)\n"
+	"4=exists(1,2)\n";
+	//translate(input);
+	
+	// gates containing quantification used at most once
+	input = "#QCIR-G14 9\n"
+	"free(1)\n"
+	"output(6)\n"
+	"3=or(1,2)\n"
+	"4=exists(2;3)\n"
+	"5=or(4,1)\n"
+	"6=or(4,5)\n";
+	//translate(input);
+	
+	// names are integers smaller or equal to n
+	input = "#QCIR-G14 3\n"
+	"free(01,2)\n"
+	"output(3)\n"
+	"3=or(1,2)\n";
+	//translate(input);
+	
+	input = "#QCIR-G14 3\n"
+	"free(1,2)\n"
+	"output(4)\n"
+	"4=or(1,2)\n";
+	//translate(input);
+	
+	// no xor gates
+	input = "#QCIR-G14 3\n"
+	"free(1,2)\n"
+	"output(3)\n"
+	"3=xor(1,2)\n";
+	//translate(input);
+	
+	// no ite gates
+	input = "#QCIR-G14 4\n"
+	"free(1,2,3)\n"
+	"output(4)\n"
+	"4=ite(1,2,3)\n";
+	translate(input);
+	
 	return 0;
 }
-
+static char * all_tests() {
+	mu_run_test(test_add_literal_to_gate);
+	mu_run_test(test_replace_var);
+	mu_run_test(test_QB_iterator);
+	mu_run_test(test_remove_var_QB);
+	mu_run_test(test_total);
+	mu_run_test(test_prenexing_with_strategy);
+	mu_run_test(test_cleansed_form);
+	return 0;
+}
+/*
 int main(int argc, char **argv) {
 	char *result = all_tests();
 	if (result != 0) {
@@ -708,4 +790,4 @@ int main(int argc, char **argv) {
 	return result != 0;
 	//test_copy_tree();
 	//test_copy_QB();
-}
+}*/

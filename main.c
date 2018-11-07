@@ -62,29 +62,6 @@ void die(const char *fmt, ...){
 		exit(EXIT_SUCCESS);
 	}
 }
-
-/*
- * checkCorrectMatch compares the contents of word with the parameter.
- * Returns 1 on exact match, terminates program when word has 
- * 
- * NEEDED?
- *
-int checkCorrectMatch(const char *str)
-{
-    size_t lenpre = strlen(word),
-           lenstr = strlen(str);
-	if(lenpre >= lenstr){
-		if(strncmp(word, str, lenstr) == 0){
-			if(lenpre == lenstr){
-				return 1;
-			}else{
-				die("Parsing error on line %lu: \"%s\" expected, \"%s\" found", lineCount, str, word);
-			}
-		}
-	}
-    return 0;
-}*/
-
 /*
  * fCheckNewline checks if a newline or EOF follows, terminates program otherwise
  * 
@@ -174,30 +151,6 @@ void fscanExpectedChar(char expected){
 		die("Parsing error at line %lu: '%c' expected", lineCount, expected);
 	}
 }
-/*
- * fscanfAndCheck calls fSkipWhitespaceAndComments and than attempts to 
- * fscanf according to provided format. Error message is printed and program exits if no match is found.
- * 
- * 				  char *format: format to be checked for, no more than 32 chars should be read
- * 					(char *word: to store result, must be big enough!)
- *					   returns: 1 on success, 0 on failure
- * 
- * NEEDED ?
- * 
-int fscanfAndCheck(char *format){
-	//long positionInStream;
-	int result = 0;
-	
-	return result;
-	positionInStream = ftell(inputStream) - positionInStream;
-	printf("exact read %lu chars\n", positionInStream);
-	if(positionInStream == ftell(inputStream)){ // compare positions before and after read, if equal => couldn't read the provided string
-		return 1;
-	}else{ // string found
-		return 0;
-	}
-}*/
- 
  /*
   * parseVariable reads a valid variable name, storing it in 'word' variable.
   * Doubles the size of 'word' until it is big enough to fit if neccessary.
@@ -217,6 +170,9 @@ int parseImmediateVariable(){
 	}
 	while(fscanf(inputStream,"%1[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]", SingleCharString) == 1){
 		// variable name longer than current wordlen-1
+		if(declaredVariableCount > 0){
+			die("Cleansed form variable count longer than 31 digits!");
+		}
 		char *auxWord;
 		char *auxFormat;
 		int newFormatLength; // length of new format string
@@ -242,30 +198,14 @@ int parseImmediateVariable(){
 		snprintf(auxFormat, newFormatLength, "%c%zu%s", '%', (wordlen-1), "[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]");
 		varFormat = auxFormat;
 		word = auxWord;
-		//printf("wordlen: %zu; word: %s; foramt: %s\n", wordlen, word, varFormat);
+	}
+	if(declaredVariableCount > 0){
+		if(word[0] == '0' || atoi(word) > declaredVariableCount){
+			die("Cleansed form violated: Variable name '%s' not an integer smaller or equal than the declared variable count(%lu).", word, declaredVariableCount);
+		}
 	}
 	return result;
 }
-/*
- * parseVariableNoDuplicate calls parseVariable and than checks if parsed word is already defined.
- * If yes, program is interrupted.
- * 
- * returns: 1 if a variable was read, 0 otherwise
- */
-/*int parseVariableNoDuplicate(){ //parseGateVariable?
-	int result;
-	var *check;
-	
-	result = parseVariable(word);
-	if(result == 0){ // no variable name could be read
-		return result;
-	}
-	check = getVarVS(data, word); // check if a variable with the same name is already defined
-	if(check != NULL){
-		die("Duplicate variable definition at line %lu", lineCount);
-	}
-	return result; // 1
-}*/
 
 /*
  * parseVariable calls fSkipWhitespaceAndComments and than parseImmediateVariable
@@ -457,7 +397,14 @@ void parseQCIR(char *inputString, long fsize)
 		v = createVar(word);
 		
 		fscanExpectedChar('=');
-		if(fscanfPlus("%7[frexistoalndFREXISTOALND]") == 0){ // scan next keyword
+		// scan next keyword
+		int scanResult;
+		if(declaredVariableCount == 0){ // cleansed form accepts only lower case words
+			scanResult = fscanfPlus("%7[frexistoalndFREXISTOALND]");
+		}else{
+			scanResult = fscanfPlus("%7[frexistoalnd]");
+		}
+		if(scanResult == 0){
 			die("Parsing failed at line %lu: 'exists', 'forall', 'and', 'or', 'xor' or 'ite' expected", lineCount);
 		}
 		
@@ -527,7 +474,6 @@ void parseQCIR(char *inputString, long fsize)
 			var *newVar;
 			fscanExpectedChar('(');
 			if(parseVariable()){
-				//getVarVS(data, word);
 				if(addExistingVarQB(&(g->localPrefix), type) == NULL){
 					if((newVar = createVar(word))){
 						addVarVL(&newVars, newVar);
@@ -585,7 +531,7 @@ void parseQCIR(char *inputString, long fsize)
 						}else{
 							// literal is a free variable that is not present in quantification -> PASS gate
 							g->type = PASS;
-							newVar = addUniqueFreeVar();
+							newVar = (addNewVarVL(&(data->potentiallyFreeVars), word))->variable; //addUniqueFreeVar();
 							addLitToGate(g, sign, newVar, 1);
 						}
 					}
@@ -598,6 +544,9 @@ void parseQCIR(char *inputString, long fsize)
 				die("Parsing failed at line %lu: variable name expected after '('", lineCount);
 			}
 		}else if(strcmp(word, "xor" ) == 0 || strcmp(word, "XOR") == 0){ // 'xor' gate
+			if(declaredVariableCount > 0){
+				die("Cleansed form violation: 'xor' gate present.");
+			}
 			char error = 1;
 			g = defineGateVar(v, XOR); // add definition
 			fscanExpectedChar('(');
@@ -614,6 +563,9 @@ void parseQCIR(char *inputString, long fsize)
 				die("Parsing failed at line %lu: bad 'xor' syntax", lineCount);
 			}
 		}else if(strcmp(word, "ite") == 0 || strcmp(word, "ITE") == 0){ // 'ite' gate
+			if(declaredVariableCount > 0){
+				die("Cleansed form violation: 'ite' gate present.");
+			}
 			char error = 1;
 			g = defineGateVar(v, ITE); // add definition
 			fscanExpectedChar('(');
@@ -670,17 +622,6 @@ void traverseTree(){
 	if((currentVar = getVarVS(data, data->outputName)) == NULL){ // check if root variable defined
 		die("Variable specified in output statement not defined in the file");
 	}
-	/*lllHead = malloc(sizeof(litListList));
-	currentLit = malloc(sizeof(litList));
-	if((lllHead == NULL) || (currentLit == NULL)){
-		die("Runtime error occured at memory initialization (traverseTree)");
-	}
-	currentLit->variable = currentVar; // initialize litListList with one element containing root gate var
-	currentLit->next = NULL;
-	lllHead->list = currentLit;
-	lllHead->next = NULL;
-	lllTail = lllHead;
-	currentlll = lllHead;*/
 	
 	g = currentVar->gateDefinition;
 	g->totalSign = data->outputSign;
@@ -713,7 +654,6 @@ void traverseTree(){
 			}
 			innerGate->localPrefix = mergeQB(g->localPrefix, innerGate->localPrefix);
 			currentVar = g->literals->variable; // redirect reference
-			//multiplySign(&(data->outputSign), g->literals->sign); // update sign
 			g = currentVar->gateDefinition;
 		}else{
 			data->prefix = mergeQB(data->prefix, g->localPrefix);
@@ -780,7 +720,6 @@ void traverseTree(){
 		currentVar = currentVL->variable;
 		currentVar->alias = ULONG_MAX; // mark visited variable
 		g = currentVar->gateDefinition;
-		//printf("Traversing %s\n", currentVar->name);
 		if(g){ // check if it is a gate variable
 			if(g->localPrefix){
 				localInnermostQBlockType = g->localPrefix->prev->type; // update innermost quantifier
@@ -790,7 +729,6 @@ void traverseTree(){
 			ll = g->literals;
 			litCount = 0; // number of literals
 			while(ll){ // add all variables used in this gate to list to be traversed
-				//printf("Adding %s\n", ll->variable->name);
 				gate *litGate = ll->variable->gateDefinition;
 				if(litGate){
 					if(ll->sign == 0){
@@ -911,7 +849,7 @@ void printQDIMACS(){
 	litList *currentLit;
 	long currentGateAlias;
 	
-	printf("c formula converted from %s\n", format);
+	printf("c Formula converted from %s\n", format);
 	printf("c Thank you for your mercy and grace, Jesus!\n");
 	printf("p cnf %lu %lu\n", data->tseitinVariableCount, data->tseitinClauseCount); // problem line
 	if(data->outputVar->gateDefinition){
@@ -1048,8 +986,8 @@ void printQDIMACS(){
 	}
 }
 
+// initialize data structure
 void initData(){
-	// initialize data structure
 	data = malloc(sizeof(varSets)); // define variable pool
 	if(data){
 		*data = (varSets){0};
@@ -1059,11 +997,19 @@ void initData(){
 	
 	wordlen = 32;
 	word = malloc(sizeof(char)*wordlen);
-	varFormat = malloc(sizeof(char)*70);
+	if(declaredVariableCount == 0){
+		varFormat = malloc(sizeof(char)*70);
+	}else{
+		varFormat = malloc(sizeof(char)*17);
+	}
 	if(word == NULL || varFormat == NULL){
 		die("Could not allocate memory");
 	}
-	strcpy(varFormat, "%31[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]"); // ascii letters, digits and underscores
+	if(declaredVariableCount == 0){
+		strcpy(varFormat, "%31[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]"); // ascii letters, digits and underscores
+	}else{
+		strcpy(varFormat, "%31[0123456789]"); // digits
+	}
 }
 
 void printUsage(char* progname){
@@ -1076,12 +1022,14 @@ void printUsage(char* progname){
 		   "  -s: Specify a prenexing strategy:\n"
 		   "      '0':∃↑∀↑ (default), '1':∃↑∀↓, '2':∃↓∀↑, '3':∃↓∀↓\n"
 		   "\n"
-		   "This is a final work to complete Bsc studies, commissioned by TU Wien.\n"
+		   "This is a Bachelor Thesis work, assigned by\n"
+		   "Associate Prof. Dipl.-Math. Dr.techn. Florian Zuleger and\n"
+		   "Ao.Univ.Prof. Dipl.-Ing. Dr.rer.nat. Uwe Egly of TU Wien.\n"
 		   "Written by Georgi Marinov(gogmarinov@gmail.com)\n"
 		   "with the wonderful help and provision of God.\n\n",
 		   progname);
 }
-/*
+
 int main(int argc, char **argv){
 	FILE *fpIn;
 	
@@ -1132,7 +1080,6 @@ int main(int argc, char **argv){
 		printUsage(argv[0]);
 		return 0;
 	}
-	//printf("og = %d, ps = %d, p = %s\n", optimalGateQuantification, prenexingStrategy, argv[optind]);
 	
 	fpIn = fopen(argv[optind], "r"); // Assume first non-option argument as input filename
 	if(fpIn == NULL){
@@ -1170,42 +1117,23 @@ int main(int argc, char **argv){
 	free(input);
 	
 	traverseTree();
-	if(declaredVariableCount){
-		if(declaredVariableCount != data->tseitinVariableCount){
-			die("Declared amount of variables(%lu) differs from actual amount(%lu)!", declaredVariableCount, data->tseitinVariableCount);
-		}
-	}
-	prenexTree();
 	
-	varList *currElem;
-	varList *currVar;
-	currElem = data->gateVars;
-	printf("Gates' free vars lists:\n");
-	do{
-		currVar = currElem->variable->gateDefinition->localFreeVars;
-		printf("%s -> ", currElem->variable->name);
-		while(currVar){
-			printf("%s ", currVar->variable->name);
-			currVar = currVar->next;
-		}
-		printf("\n");
-		currElem = currElem->next;
-	}while(currElem);
+	prenexTree();
 	
 	// Adds gate vars to innermost quantifier block, existentially quantified, if no optimal placement requested
 	if(optimalGateQuantification == 0){
 		quantifyGateVars();
 	}
 	indexVars();
+	if(declaredVariableCount){
+		if(declaredVariableCount != data->tseitinVariableCount){
+			die("Cleansed form violation: Declared amount of variables(%lu) differs from actual amount(%lu)!", declaredVariableCount, data->tseitinVariableCount);
+		}
+	}
 	
-	 //Test printing
-	/printData();
-	printf("Tseitin clause count: %lu\n", data->tseitinClauseCount);
-	printf("Tseitin variable count: %lu\n\n", data->tseitinVariableCount);
-	*
 	printQDIMACS();
 	
 	freeResources(); // free variable storage
 	
 	return 0;
-}*/
+}
