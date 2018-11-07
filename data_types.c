@@ -7,7 +7,7 @@
 // swap target if modifier is negative (0)
 void multiplySign(char *target, char modifier){
 	if(modifier == 0){
-		if(*target){
+		if(*target != 0){
 			*target = 0;
 		}else{
 			*target = 1;
@@ -281,6 +281,10 @@ litList *addVarLLHead(litList **list, char sign, var *variable){
 // returns pointer to new element
 litList *addVarLLTail(litList **list, char sign, var *variable){ // TODO: check **
 	litList *newElem;
+	if(list == NULL){
+		die("addVarLLTail cannot be calle with a NULL argument for litList");
+		return NULL;
+	}
 	newElem = malloc(sizeof(litList));
 	if(newElem != NULL){
 		newElem->sign = sign;
@@ -378,6 +382,8 @@ gate *defineGateVar(var *target, char type){
 		result->localPrefix = NULL;
 		//result->localScope = NULL;
 		result->uses = 0;
+		result->outerQuantifier = 0;
+		result->totalSign = 1;
 		if(target->gateDefinition){
 			freeLL(target->gateDefinition->literals);
 			//free(target->gateDefinition->) necessary?
@@ -465,6 +471,23 @@ qBlock *copyQB(qBlock *toCopy){
 	}
 	return newHead;
 }
+
+// swap the quantifiers of a quantifier block
+void swapQuantifiers(qBlock *head){
+	qBlock *current = head;
+	if(current == NULL){
+		return;
+	}
+	do{
+		if(current->type == EXISTS){
+			current->type = FORALL;
+		}else{
+			current->type = EXISTS;
+		}
+		current = current->next;
+	}while(current != head);
+}
+
 // copy a tree beginning at root gate, return a pointer to new root,
 // references to non-gate vars are kept, returns argument if it is not a gate
 var *copyTree(var *root){
@@ -736,8 +759,6 @@ void addLitToGate(gate *g, char sign, var *atom, char isNewVar){
 		}else{
 			addVarLLTail(&(g->literals), sign, atom);
 		}
-		printf("ITE %s\n", atom->name);
-		printLL(g->literals);
 	}else if(g->type == TRUE || g->type == FALSE){
 		//die("Adding a literal to a truth constant gate pointless (addLitToGateAssumeFree)");
 	}else if(g->type == PASS){
@@ -913,6 +934,17 @@ char detectConflict(var *v1, gate *g2){
 	}
 	return 0;
 }
+// counts and saves amount of quantifier alterations within the gate's prefix
+void setPrefixAlterations(gate *g){
+	g->prefixAlterations = 0;
+	if(g->localPrefix){
+		qBlock *current = g->localPrefix;
+		do{
+			++(g->prefixAlterations);
+			current = current->next;
+		}while(current != g->localPrefix);
+	}
+}
 // sortOutConflictsAndMergeFreeVars checks for conflicts between variables of a gate and replaces vars
 // also prepares list of all free vars of this gate
 void sortOutConflictsAndMergeFreeVars(gate *g){ //, gate *g1, gate *g2
@@ -925,7 +957,7 @@ void sortOutConflictsAndMergeFreeVars(gate *g){ //, gate *g1, gate *g2
 	varList **fvl;
 	char hit = 0;
 	
-	while(ll1){ // add all free vars from lilist to list of local free vars of this gate
+	while(ll1){ // add all free vars from litlist to list of local free vars of this gate
 		if(ll1->variable->gateDefinition == NULL){ // free variable
 			addVarVL(&(g->localFreeVars), ll1->variable);
 		}
@@ -985,6 +1017,7 @@ void sortOutConflictsAndMergeFreeVars(gate *g){ //, gate *g1, gate *g2
 					f1 = f1->next;
 				}
 				if(hit == 0){
+					//addVarVL(&(g->localFreeVars), (*fvl)->variable); // free var added to global list, performance improvement here possible
 					fvl = &((*fvl)->next);
 				}else{
 					hit = 0;
@@ -1039,6 +1072,8 @@ void sortOutConflictsAndMergeFreeVars(gate *g){ //, gate *g1, gate *g2
 	//printf("Free %s:", g->variable->name);
 	//printVL(g->localFreeVars);
 	//printf("\n");
+	
+	setPrefixAlterations(g);
 }
 	
 	/*
@@ -1119,6 +1154,8 @@ void sortOutConflictsAndMergeFreeVars(gate *g){ //, gate *g1, gate *g2
 	}*/
 
 // sorts out conflicts in g and than unites all prefixes (left outermost, right innermost)
+//
+// !!! DOES NOT TAKE INTO ACCOUNT NEGATIONS OF QUANTIFIERS
 void prenexGateSimple(gate *g){
 	//printf("prenexing %s\n", g->variable->name);
 	sortOutConflictsAndMergeFreeVars(g);
@@ -1130,8 +1167,230 @@ void prenexGateSimple(gate *g){
 		}
 		ll = ll->next;
 	}
-	printf("%s prenexed:\n", g->variable->name);
-	printQB(g->localPrefix);
+}
+
+// adds an additional empty outermost quantifier block as a new head
+// necessary for optimal merging
+// assumes non-NULL argument
+void addEmptyHeadQB(gate *g){
+	qBlock *newHead = malloc(sizeof(qBlock));
+	if(newHead == NULL){
+		die("Runtime error at memory initialization (addEmptyHeadQB).");
+	}
+	newHead->variables = NULL;
+	if(g->localPrefix->type == EXISTS){
+		newHead->type = FORALL;
+	}else{
+		newHead->type = EXISTS;
+	}
+	newHead->next = g->localPrefix;
+	newHead->prev = g->localPrefix->prev;
+	g->localPrefix->prev->next = newHead;
+	g->localPrefix->prev = newHead;
+	g->localPrefix = newHead;
+	++(g->prefixAlterations);
+}
+
+// fuses two varLists together, assumes vl2 is not NULL
+varList *fuseVLS(varList *vl1, varList *vl2){
+	varList *current = vl2;
+	while(current->next){
+		current = current->next;
+	}
+	current->next = vl1;
+	return vl2;
+}
+// mergeQBWithStrategy "inserts" qb2 into qb1 according to the specified strategy
+// assumes qb1 has at least as many "slots" (quantifier alterations) to fit qb2
+void mergeQBWithStrategy(qBlock *qb1, qBlock *qb2){
+	if(qb2 == NULL) return;
+	qBlock *current1, *current2 = qb2;
+	if(prenexingStrategy == 0){
+		if(qb1->type == qb2->type){
+			current1 = qb1;
+		}else{
+			current1 = qb1->next;
+		}
+		do{
+			current1->variables = fuseVLS(current1->variables, current2->variables);
+			current1 = current1->next;
+			current2 = current2->next;
+		}while(current2 != qb2);
+	}else if(prenexingStrategy == 1){
+		if(qb1->type == qb2->type){
+			current1 = qb1;
+		}else{
+			current1 = qb1->next;
+		}
+		qBlock *end = qb2;
+		if(qb2->prev->type == FORALL){
+			end = qb2->prev;
+			if(qb1->prev->type == FORALL){
+				qb1->prev->variables = fuseVLS(qb1->prev->variables, end->variables);
+			}else{
+				qb1->prev->prev->variables = fuseVLS(qb1->prev->prev->variables, end->variables);
+			}
+			if(qb2 == qb2->next) return;
+		}
+		do{
+			current1->variables = fuseVLS(current1->variables, current2->variables);
+			current1 = current1->next;
+			current2 = current2->next;
+		}while(current2 != end);
+	}else if(prenexingStrategy == 2){
+		if(qb1->type == qb2->type){
+			current1 = qb1;
+		}else{
+			current1 = qb1->next;
+		}
+		qBlock *end = qb2;
+		if(qb2->prev->type == EXISTS){
+			end = qb2->prev;
+			if(qb1->prev->type == EXISTS){
+				qb1->prev->variables = fuseVLS(qb1->prev->variables, end->variables);
+			}else{
+				qb1->prev->prev->variables = fuseVLS(qb1->prev->prev->variables, end->variables);
+			}
+			if(qb2 == qb2->next) return;
+		}
+		do{
+			current1->variables = fuseVLS(current1->variables, current2->variables);
+			current1 = current1->next;
+			current2 = current2->next;
+		}while(current2 != end);
+	}else if(prenexingStrategy == 3){
+		current2 = qb2->prev;
+		if(qb1->prev->type == qb2->prev->type){
+			current1 = qb1->prev;
+		}else{
+			current1 = qb1->prev->prev;
+		}
+		do{
+			current1->variables = fuseVLS(current1->variables, current2->variables);
+			current1 = current1->prev;
+			current2 = current2->prev;
+		}while(current2 != qb2->prev);
+	}
+}
+
+void prenexGateWithStrategy(gate *g){
+	//printf("Prenexing %s\n", g->variable->name);
+	sortOutConflictsAndMergeFreeVars(g);
+	
+	litList *ll = g->literals;
+	int criticalPathLength = 0;
+	gate *criticalPathGate = NULL, *secondCriticalPathGate = NULL, *current;
+	while(ll){
+		current = ll->variable->gateDefinition;
+		if(current){
+			/*if(ll->sign == 0){ // swap quantifiers if literal is negated
+				printf("swapping %s\n", ll->variable->name);
+				swapQuantifiers(current->localPrefix);
+			}*/
+			if(current->prefixAlterations > criticalPathLength){
+				criticalPathLength = current->prefixAlterations;
+				criticalPathGate = current;
+			}
+		}
+		ll = ll->next;
+	}
+	if(criticalPathLength > 0){
+		ll = g->literals;
+		while(ll){
+			current = ll->variable->gateDefinition;
+			if(current){
+				if((current->prefixAlterations == criticalPathLength) && (current->localPrefix->type != criticalPathGate->localPrefix->type)){
+					// a second critical path starting with different quantifier exists -> D-formula
+					secondCriticalPathGate = current;
+					break;
+				}
+			}
+			ll = ll->next;
+		}
+		if(secondCriticalPathGate){ // D-formula
+			if((criticalPathGate->outerQuantifier == 0) || (prenexingStrategy >= 2)){ // we are dealing with the outermost part of prefix
+				/*if(criticalPathGate->localPrefix->type == EXISTS){
+					if(prenexingStrategy != 2){
+						criticalPathGate = secondCriticalPathGate; // secondCriticalPath begins with forall and needs to be extended
+					}
+				}else{
+					if(prenexingStrategy == 2){
+						criticalPathGate = secondCriticalPathGate; // secondCriticalPath begins with exists and needs to be extended
+					}
+				}*/
+				if(criticalPathGate->localPrefix->prev->type == FORALL){
+					criticalPathGate = secondCriticalPathGate; // D-formula should end with EXISTS so that adding gate vars does not add extra alteration
+				}
+			}else if(criticalPathGate->outerQuantifier == criticalPathGate->localPrefix->type){ // criticalPath comes first
+				criticalPathGate = secondCriticalPathGate;
+			}
+			addEmptyHeadQB(criticalPathGate); // make room at the beggining of criticalPathGate
+		}else{
+			if(criticalPathGate->outerQuantifier != criticalPathGate->localPrefix->type){
+				addEmptyHeadQB(criticalPathGate); // make room at the beggining of criticalPathGate only if it is different than what comes next
+			}
+		}
+		
+		ll = g->literals;
+		while(ll){
+			current = ll->variable->gateDefinition;
+			if(current && (current != criticalPathGate)){
+				mergeQBWithStrategy(criticalPathGate->localPrefix, current->localPrefix);
+			}
+			ll = ll->next;
+		}
+		
+		if(g->localPrefix){ // merge outer block with union of inner quantifiers
+			g->prefixAlterations += criticalPathGate->prefixAlterations;
+			if(g->localPrefix->prev->type == criticalPathGate->localPrefix->type){
+				--(g->prefixAlterations);
+			}
+			g->localPrefix = mergeQB(g->localPrefix, criticalPathGate->localPrefix);
+		}else{ // check if an empty head remains and update prefix of the entire gate
+			qBlock *prefix = criticalPathGate->localPrefix;
+			if(prefix->variables == NULL){
+				prefix->next->prev = prefix->prev;
+				prefix->prev->next = prefix->next;
+				prefix = prefix->next;
+				--(criticalPathGate->prefixAlterations);
+			}
+			g->localPrefix = prefix;
+			g->prefixAlterations = criticalPathGate->prefixAlterations;
+		}
+	}
+	
+	if(optimalGateQuantification){ // quantify gate at the end of its prefix
+		if(g->localPrefix){
+			if(g->localPrefix->prev->type == EXISTS){
+				addVarVL(&(g->localPrefix->prev->variables), g->variable);
+			}else{
+				qBlock *b = malloc(sizeof(qBlock));
+				varList *vl = malloc(sizeof(varList));
+				if((b == NULL) || (vl == NULL)) die("Runtime error occured at memory initialization (prenexGateWithStrategy).");
+				vl->variable = g->variable;
+				vl->next = NULL;
+				b->type = EXISTS;
+				b->variables = vl;
+				b->next = g->localPrefix;
+				b->prev = g->localPrefix->prev;
+				g->localPrefix->prev->next = b;
+				g->localPrefix->prev = b;
+			}
+		}else{
+			qBlock *b = malloc(sizeof(qBlock));
+			varList *vl = malloc(sizeof(varList));
+			if((b == NULL) || (vl == NULL)) die("Runtime error occured at memory initialization (prenexGateWithStrategy).");
+			addVarVL(&vl, g->variable);
+			b->type = EXISTS;
+			b->variables = vl;
+			b->next = b;
+			b->prev = b;
+			g->localPrefix = b;
+		}
+	}
+	
+	/*printf("%s prenexed:\n", g->variable->name);
+	printQB(g->localPrefix);*/
 }
 
 // replaces occurences of toBeReplaced in subtree scope with replaceWith
@@ -1190,7 +1449,7 @@ void prenexTree(){
 		}else{
 			g = (*current)->variable->gateDefinition;
 			//if(g->type != TRUE && g->type != FALSE && g->type != EXISTS && g->type != FORALL){
-				prenexGateSimple(g);
+				prenexGateWithStrategy(g);
 			//}
 			current = &((*current)->next);
 		}

@@ -51,9 +51,12 @@ typedef struct gate{
 	litList* literals;
 	unsigned int subtreeSize; // longest path to a leaf, 0 means a constant
 	qBlock* localPrefix; // initialized only if it is a quantifier gate, later referencing the dynamic prefix
+	unsigned int prefixAlterations; // length of quantifier prefix alterations
 	varList* localFreeVars; // list of free variables in the subtree
 	//varList* localScope; // list of variables for which this subtree is exactly their scope
 	unsigned int uses; // initially 0, incremented every time the gate is used inside the definition of another gate
+	char outerQuantifier; // this variable stores the type of the innermost quantifier of the parent formula, 0 if there is no quantifier
+	char totalSign; // result of all preceding negations on the local prefix
 }gate;
 
 /*typedef struct varListList{
@@ -79,6 +82,8 @@ typedef struct {
 varSets *data;
 unsigned long lineCount;
 char* word;
+char optimalGateQuantification;
+char prenexingStrategy;
 
 // --- REQUIRED FUNCTIONS --- //
 
@@ -156,6 +161,8 @@ void addUniqueVarQB(char quantifier);
 var *addExistingVarQB(qBlock **qb, char quantifier);
 qBlock *copyQB(qBlock *toCopy);
 qBlock *mergeQB(qBlock *qb1, qBlock *qb2);
+// swap the quantifiers of a quantifier block
+void swapQuantifiers(qBlock *head);
 // detectConflict checks if v1 is found in prefix or free vars of g2
 // returns 1 on match, returns 0 otherwise 
 char detectConflict(var *v1, gate *g2);
@@ -184,6 +191,8 @@ void freeVS(varSets *);
 
 //print contents of quantifier prefix to stdout
 void printQB(qBlock *head);
+void printVL(varList *current);
+void printLL(litList *current);
 void printFree();
 void printPrefix();
 void printGates();

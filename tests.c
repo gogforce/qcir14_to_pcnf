@@ -424,6 +424,80 @@ static char * test_file() {
 	printString("p cnf 1 1\n1 0");
 	return 0;
 }
+
+// checks if file has exactly content after first two comment lines
+int checkFileContent(char *filename, char *content){
+	FILE *fpIn = fopen(filename, "r");
+	if(fpIn == NULL){
+		perror("Could not open input file. (checkFileContent)");
+		exit(EXIT_FAILURE);
+	}
+	
+	char *input;
+	long fsize;
+	
+	// load file at once to minimize hard disk operations
+	fseek(fpIn, 0, SEEK_END);
+	fsize = ftell(fpIn);
+	rewind(fpIn);
+
+	input = malloc(fsize + 1);
+	if(input == NULL){
+		perror("Could not allocate memory according to file size. (checkFileContent)");
+		exit(EXIT_FAILURE);
+	}
+	if(fread(input, fsize, 1, fpIn) < 1){
+		if(fread(input, fsize, 1, fpIn) < 1){
+			perror("Reading file failed or file empty. (checkFileContent)");
+			exit(EXIT_FAILURE);
+		}
+	}
+	
+	fclose(fpIn);
+	input[fsize] = 0;
+	
+	if(strcmp(input+78, content)){ // first two lines are exactly 78 bytes IF format is QCIR-14
+		return 0;
+	}else{
+		return 1;
+	}
+}
+
+// used for testing
+void translate(char *input){
+	// initialize data structure
+	initData();
+	lineCount = 1;
+	
+	parseQCIR(input, strlen(input));
+	printf("parsed!\n");
+	traverseTree();
+	if(declaredVariableCount){
+		if(declaredVariableCount != data->tseitinVariableCount){
+			die("Declared amount of variables(%lu) differs from actual amount(%lu)!", declaredVariableCount, data->tseitinVariableCount);
+		}
+	}
+	//printGates();
+	printf("traversed!\n");
+	prenexTree();
+	printf("prenexed!\n");
+	// !!! Adds gate vars to innermost quantifier block, existentially quantified !!!
+	if(optimalGateQuantification == 0){
+		quantifyGateVars();
+	}
+	printPrefix();
+	
+	//printGates();
+	indexVars();
+	
+	freopen("test_output.txt", "w", stdout);
+	printQDIMACS();
+	fflush(stdout);
+	freopen("/dev/tty", "w", stdout); /*for gcc, ubuntu*/
+	
+	freeResources(); // free variable storage
+}
+
 static char * test_total() {
 	//freopen("test_output.txt", "w", stdout);
 	char* input;
@@ -475,14 +549,16 @@ static char * test_total() {
 	"g10=exists(f1;g11)\n"
 	"g9=forall(f4;g10)\n"
 	"g8=ite(g9,g12,g13)\n"
-	"g7=forall(x,y;f4)"
+	"g7=forall(x,y;f4)\n"
 	"g6=or(f1,f2,f3)\n"
 	"g5=forall(f1;g6)\n"
 	"g4=forall(f2;g5)\n"
 	"g3=and(g4,g7,g8)\n"
 	"g2=forall(f1,f5; g3)\n"
 	"g1=exists(x,y; g2)";
-	translate(input, strlen(input));
+	optimalGateQuantification = 0;
+	prenexingStrategy = 0;
+	translate(input);
 	mu_assert("Unexpected output - regular", checkFileContent("test_output.txt",
 	"p cnf 1 1\n"
 	"-1 0\n"));
@@ -491,12 +567,131 @@ static char * test_total() {
 	return 0;
 }
 
+static char * test_prenexing_with_strategy(){
+	char* input;
+	optimalGateQuantification = 0;
+	prenexingStrategy = 2;
+	
+	// test D-formula without predecessor
+	input = "#QCIR-14\n"
+	"output(g1)\n"
+	"g9=or(f1_1,f1_2,e1_1)\n"
+	"g5=or(f2_1,e2_2,e2_1)\n"
+	"g8=forall(f1_1;g9)\n"
+	"g7=exists(e1_1;g8)\n"
+	"g6=forall(f1_2;g7)\n"
+	"g4=exists(e2_2;g5)\n"
+	"g3=forall(f2_1;g4)\n"
+	"g2=exists(e2_1;g3)\n"
+	"g1=xor(g2,g6)\n";
+	translate(input);
+	
+	// test D-formula with predecessor
+	input = "#QCIR-14\n"
+	"output(g)\n"
+	"g9=or(f1_1,f1_2,e1_1)\n"
+	"g5=or(f2_1,e2_2,e2_1,x)\n"
+	"g8=forall(f1_1;g9)\n"
+	"g7=exists(e1_1;g8)\n"
+	"g6=forall(f1_2;g7)\n"
+	"g4=exists(e2_2;g5)\n"
+	"g3=forall(f2_1;g4)\n"
+	"g2=exists(e2_1;g3)\n"
+	"g1=xor(g2,g6)\n"
+	"g=exists(x;g1)\n";
+	translate(input);
+	
+	// test merging with usable foreknowledge
+	input = "#QCIR-14\n"
+	"forall(f)\n"
+	"output(g1)\n"
+	"g7=or(fup,f)\n"
+	"g6=or(e,fbottom)\n"
+	"g5=forall(fbottom;g6)\n"
+	"g4=exists(e;g5)\n"
+	"g3=forall(fup;g7)\n"
+	"g2=or(g3,g4)\n"
+	"g1=or(g2,f)\n";
+	translate(input);
+	
+	// test merging with unusable foreknowledge
+	input = "#QCIR-14\n"
+	"exists(v)\n"
+	"output(g1)\n"
+	"g7=or(fup,v)\n"
+	"g6=or(e,fbottom)\n"
+	"g5=forall(fbottom;g6)\n"
+	"g4=exists(e;g5)\n"
+	"g3=forall(fup;g7)\n"
+	"g2=or(g3,g4)\n"
+	"g1=or(g2,v)\n";
+	translate(input);
+	
+	// test empty head
+	input = "#QCIR-14\n"
+	"forall(v)\n"
+	"output(g1)\n"
+	"g7=or(emiddle,v)\n"
+	"g6=or(e,fbottom)\n"
+	"g5=forall(fbottom;g6)\n"
+	"g4=exists(e;g5)\n"
+	"g3=exists(emiddle;g7)\n"
+	"g2=or(g3,g4)\n"
+	"g1=or(g2,v)\n";
+	translate(input);
+	
+	// test quantifier swapping
+	input = "#QCIR-14\n"
+	"output(-g1)\n"
+	"g11=or(f5,f4,f2,ef1)\n"
+	"g10=forall(f5;g11)\n"
+	"g9=forall(f4;-g10)\n"
+	"g8=or(f1,e2,e3,f3)\n"
+	"g7=exists(e3;g8)\n"
+	"g6=forall(f3;-g7)\n"
+	"g5=and(g6,-g9)\n"
+	"g4=exists(e2;-g5)\n"
+	"g3=forall(f2;g4)\n"
+	"g2=exists(ef1;g3)\n"
+	"g1=forall(f1;g2)\n";
+	translate(input);
+	
+	
+	// test quantifier swapping
+	input = "#QCIR-14\n"
+	"output(g1)\n"
+	"g3=and(f,ef)\n"
+	"g2=exists(ef;g3)\n"
+	"g1=forall(f;-g2)\n";
+	//translate(input);
+	
+	// example from prenexing strategies paper
+	input = "#QCIR-14\n"
+	"output(g1)\n"
+	"g13=and(r2,p,q2)\n"
+	"g12=exists(r2;g13)\n"
+	"g11=forall(q2;g12)\n"
+	"g10=and(r1,q1,p)\n"
+	"g9=exists(r1;g10)\n"
+	"g8=forall(q1;g9)\n"
+	"g7=and(p,q,r,s,t)\n"
+	"g6=exists(t;g7)\n"
+	"g5=forall(s;g6)\n"
+	"g4=exists(r;g5)\n"
+	"g3=forall(q;g4)\n"
+	"g2=or(g3,g8,-g11)\n"
+	"g1=exists(p;g2)\n";
+	translate(input);
+	return 0;
+}
+
 static char * all_tests() {
 	//mu_run_test(test_add_literal_to_gate);
 	//mu_run_test(test_replace_var);
 	//mu_run_test(test_QB_iterator);
 	//mu_run_test(test_remove_var_QB);
-	mu_run_test(test_total);
+	//mu_run_test(test_total);
+	mu_run_test(test_prenexing_with_strategy);
 	return 0;
 }
 
