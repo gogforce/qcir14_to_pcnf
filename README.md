@@ -8,8 +8,8 @@ Usage:
 
   -g: Optimal placement of gate variables in prefix.
       By default they are quantified at the innermost block.
-  -s: Specify a prenexing strategy:\n"
-      '0':∃↑∀↑ (default), '1':∃↑∀↓, '2':∃↓∀↑, '3':∃↓∀↓
+  -s: Specify a prenexing strategy:
+      '0':∃↑∀↑ (default), '1':∃↑∀↓, '2':∃↓∀↑, '3':∃↓∀↓.
 
 This is a Bachelor Thesis work, assigned by
 Associate Prof. Dipl.-Math. Dr.techn. Florian Zuleger and
