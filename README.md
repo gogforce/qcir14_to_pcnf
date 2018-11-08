@@ -6,10 +6,8 @@ The program consists of the files data_types.c, data_types.h and main.c.
 Usage:
        QCIR14_to_PCNF [-g][-s <prenexing_strategy>] <input_filename>
 
-  -g: Optimal placement of gate variables in prefix.
-      By default they are quantified at the innermost block.
-  -s: Specify a prenexing strategy:
-      '0':∃↑∀↑ (default), '1':∃↑∀↓, '2':∃↓∀↑, '3':∃↓∀↓.
+-g: Optimal placement of gate variables in prefix. By default they are quantified at the innermost block.
+-s: Specify a prenexing strategy: '0':∃↑∀↑ (default), '1':∃↑∀↓, '2':∃↓∀↑, '3':∃↓∀↓.
 
 This is a Bachelor Thesis work, assigned by
 Associate Prof. Dipl.-Math. Dr.techn. Florian Zuleger and
