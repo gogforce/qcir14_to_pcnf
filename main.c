@@ -17,7 +17,9 @@ char* word; // stores current string of interest
 size_t wordlen; // size of word
 char* varFormat; // Format argument for fscanf regarding variable names, dependant on wordlen
 char optimalGateQuantification = 0; // if it is 0, gate variables will be quantified at innermost block, if it is 1 - at optimal spot
-char prenexingStrategy = 0; // 0 means ∃↑∀↑, 1-∃↑∀↓, 2-∃↓∀↑, 3-∃↓∀↓
+char prenexingStrategy = 0; // 0 means ∃↑∀↑, 1 means ∃↑∀↓, 2 means ∃↓∀↑, 3 means ∃↓∀↓
+char inPrenexForm = 2; // state of input formula, if a gate variable is quantified at the prefix it means the formula is in prenex form and this value is changed to 1, it is changed to 0 if a quantifier gate is encountered
+varList* nonQuantifiedGates = NULL;
 
 /*
  * freeResources frees malloced variables
@@ -87,7 +89,7 @@ int fCheckNewline(){
  * lineCount for every encountered \n.
  * 
  * unsigned long *lineCount: pointer to the variable to be incremented
- * 					   returns: -1 if EOF reached, otherwise 0
+ * 					returns: -1 if EOF reached, otherwise 0
  */
 void fSkipWhitespaceAndComments(){
 	char aux[2] = "";
@@ -153,7 +155,7 @@ void fscanExpectedChar(char expected){
 }
  /*
   * parseVariable reads a valid variable name, storing it in 'word' variable.
-  * Doubles the size of 'word' until it is big enough to fit if neccessary.
+  * Doubles the size of 'word' until it is big enough to fit if necessary.
   * 
   *    returns: 1 if a variable was read, EOF if EOF reached, 0 otherwise
   */
@@ -393,9 +395,29 @@ void parseQCIR(char *inputString, long fsize)
 			}
 		}
 		// Gate name must be unique, create a new var but first we must parse literals to see at which level it belongs
-		checkUniqueness(word);
-		v = createVar(word);
-		
+		//checkUniqueness(word);
+		v = getVarQB(data->prefix, word);
+		if(v != NULL){ // check if gate var quantified in prefix meaning that input formula is in prenex form
+			if(inPrenexForm == 0){
+				die("Gate variable at line %lu: %s quantified at prefix, which means input formula is in prenex form, but it has quantifier gate(s)", lineCount, word);
+			}
+			inPrenexForm = 1;
+		}else{
+			v = getVarVL(data->potentiallyFreeVars, word);
+			if(v == NULL){
+				v = getVarVL(data->freeVars, word);
+				if(v == NULL){
+					v = getVarVL(data->gateVars, word);
+				}
+			}
+			if(v != NULL){
+				die("Duplicate variable definition at line %lu: %s", lineCount, v->name);
+			}
+			v = createVar(word);
+			if(inPrenexForm != 0){
+				addVarVL(&nonQuantifiedGates, v);
+			}
+		}
 		fscanExpectedChar('=');
 		// scan next keyword
 		int scanResult;
@@ -463,6 +485,11 @@ void parseQCIR(char *inputString, long fsize)
 				g->type = FALSE;
 			}
 		}else if(strcmp(word, "forall" ) == 0 || strcmp(word, "FORALL") == 0 || strcmp(word, "exists" ) == 0 || strcmp(word, "EXISTS") == 0){
+			if(inPrenexForm == 1){
+				die("Quantifier gate variable at line %lu: %s, however a gate is already quantified at prefix, which means input formula should be in prenex form", lineCount, word);
+			}else{
+				inPrenexForm = 0;
+			}
 			char type;
 			if(strcmp(word, "forall" ) == 0 || strcmp(word, "FORALL") == 0){
 				type = FORALL;
@@ -598,7 +625,7 @@ void parseQCIR(char *inputString, long fsize)
 		}
 		
 		fscanExpectedChar(')'); // all gate statements end with ')'
-		addUniqueGateVar(v);
+		addGateVar(v);
 		//fCheckNewline();
 	}
 }
@@ -709,6 +736,7 @@ void traverseTree(){
 	}
 	
 	addVarVL(&vlHead, currentVar);
+	currentVar->alias = ULONG_MAX; // mark visited root variable
 	vlTail = vlHead;
 	currentVL = vlHead;
 	data->outputVar = currentVar; // update root variable
@@ -718,7 +746,6 @@ void traverseTree(){
 	
 	do{ // traverse list as it expands
 		currentVar = currentVL->variable;
-		currentVar->alias = ULONG_MAX; // mark visited variable
 		g = currentVar->gateDefinition;
 		if(g){ // check if it is a gate variable
 			if(g->localPrefix){
@@ -729,68 +756,71 @@ void traverseTree(){
 			ll = g->literals;
 			litCount = 0; // number of literals
 			while(ll){ // add all variables used in this gate to list to be traversed
-				gate *litGate = ll->variable->gateDefinition;
-				if(litGate){
-					if(ll->sign == 0){
-						if(g->totalSign){
-							litGate->totalSign = 0;
-						}else{
-							litGate->totalSign = 1;
-						}
-					}else{
-						litGate->totalSign = g->totalSign;
-					}
-					if((litGate->type == EXISTS || litGate->type == FORALL)){
-						if(litGate->totalSign == 0){
-							swapQuantifiers(litGate->localPrefix);
-						}
-						while(litGate){
-							if(litGate->type == EXISTS || litGate->type == FORALL){ // chain of quantifier blocks, merge
-								if(litGate->literals->variable->gateDefinition){
-									gate *innerGate = litGate->literals->variable->gateDefinition;
-									iteratorQB *it = newQBiterator(innerGate->localPrefix);
-									var *v;
-									while((v = nextVarQB(it))){
-										if(detectConflict(v, litGate)){
-											removeVarQB(&(litGate->localPrefix), v);
-										}
-									}
-									if(litGate->literals->sign == 0){
-										multiplySign(&(ll->sign), 0); // update sign
-										if(litGate->totalSign){
-											innerGate->totalSign = 0;
-										}else{
-											innerGate->totalSign = 1;
-										}
-									}else{
-										innerGate->totalSign = litGate->totalSign;
-									}
-									if(innerGate->totalSign == 0){
-										swapQuantifiers(innerGate->localPrefix);
-									}
-									innerGate->localPrefix = mergeQB(litGate->localPrefix, innerGate->localPrefix);
-									ll->variable = litGate->literals->variable; // redirect reference
-									litGate = ll->variable->gateDefinition;
-								}else{
-									die("EXISTS/FORALL gate without a literal! (traverseTree)");
-								}
+				if(ll->variable->alias == 0){ // if variable already reached, do not process again
+					gate *litGate = ll->variable->gateDefinition;
+					if(litGate){
+						if(ll->sign == 0){
+							if(g->totalSign){
+								litGate->totalSign = 0;
 							}else{
-								break;
+								litGate->totalSign = 1;
+							}
+						}else{
+							litGate->totalSign = g->totalSign;
+						}
+						if((litGate->type == EXISTS || litGate->type == FORALL)){
+							if(litGate->totalSign == 0){
+								swapQuantifiers(litGate->localPrefix);
+							}
+							while(litGate){
+								if(litGate->type == EXISTS || litGate->type == FORALL){ // chain of quantifier blocks, merge
+									if(litGate->literals->variable->gateDefinition){
+										gate *innerGate = litGate->literals->variable->gateDefinition;
+										iteratorQB *it = newQBiterator(innerGate->localPrefix);
+										var *v;
+										while((v = nextVarQB(it))){
+											if(detectConflict(v, litGate)){
+												removeVarQB(&(litGate->localPrefix), v);
+											}
+										}
+										if(litGate->literals->sign == 0){
+											multiplySign(&(ll->sign), 0); // update sign
+											if(litGate->totalSign){
+												innerGate->totalSign = 0;
+											}else{
+												innerGate->totalSign = 1;
+											}
+										}else{
+											innerGate->totalSign = litGate->totalSign;
+										}
+										if(innerGate->totalSign == 0){
+											swapQuantifiers(innerGate->localPrefix);
+										}
+										innerGate->localPrefix = mergeQB(litGate->localPrefix, innerGate->localPrefix);
+										ll->variable = litGate->literals->variable; // redirect reference
+										litGate = ll->variable->gateDefinition;
+									}else{
+										die("EXISTS/FORALL gate without a literal! (traverseTree)");
+									}
+								}else{
+									break;
+								}
 							}
 						}
-					}
-					if(litGate){
-						litGate->outerQuantifier = localInnermostQBlockType;
-						addVarVLTail(&vlTail, ll->variable);
-					}else{
-						ll->variable->alias = ULONG_MAX;
-					}
-				}else{
-					ll->variable->alias = ULONG_MAX;
+						if(litGate){
+							litGate->outerQuantifier = localInnermostQBlockType;
+							addVarVLTail(&vlTail, ll->variable);
+						}/*else{
+							ll->variable->alias = ULONG_MAX;
+						}*/
+					}//else{
+					ll->variable->alias = ULONG_MAX; // mark included variable
+					//}
 				}
 				++litCount;
 				ll = ll->next;
 			}
+			//printf("%lu + %s:%d\n", data->tseitinClauseCount, g->variable->name, g->type);
 			if(g->type == AND){
 				if(litCount){
 					data->tseitinClauseCount += litCount + 1; // disjunction between every literal and negated gate, plus one containing every literal negated
@@ -1023,8 +1053,8 @@ void printUsage(char* progname){
 		   "      '0':∃↑∀↑ (default), '1':∃↑∀↓, '2':∃↓∀↑, '3':∃↓∀↓\n"
 		   "\n"
 		   "This is a Bachelor Thesis work, assigned by\n"
-		   "Associate Prof. Dipl.-Math. Dr.techn. Florian Zuleger and\n"
-		   "Ao.Univ.Prof. Dipl.-Ing. Dr.rer.nat. Uwe Egly of TU Wien.\n"
+		   "Ao.Univ.Prof. Dipl.-Ing. Dr.rer.nat. Uwe Egly of TU Wien and\n"
+		   "Dr. Florian Lonsing.\n"
 		   "Written by Georgi Marinov(gogmarinov@gmail.com)\n"
 		   "with the wonderful help and provision of God.\n\n",
 		   progname);
@@ -1115,21 +1145,60 @@ int main(int argc, char **argv){
 	
 	parseQCIR(input, fsize);
 	free(input);
-	
+	/*varList* aux = data->gateVars;
+	int a = 0;
+	while(aux){
+		a++;
+		printf("%s: %lu\n",aux->variable->name, aux->variable->alias);
+		aux = aux->next;
+	}
+	printf("%d\n----------------------------------------------------------------------------\n-------------------------------------------\n---------------------------\n", a);
+	*/
 	traverseTree();
 	
-	prenexTree();
-	
-	// Adds gate vars to innermost quantifier block, existentially quantified, if no optimal placement requested
-	if(optimalGateQuantification == 0){
+	if(inPrenexForm && declaredVariableCount){ // check if cleansed form is violated by introducing non-declared free vars in a prenexed input
+		if(data->potentiallyFreeVars != NULL){
+			die("Cleansed form violation: input contains non-declared free vars.");
+		}
+	}
+	if(inPrenexForm == 0){
+		prenexTree();
+		// Adds gate vars to innermost quantifier block, existentially quantified, if no optimal placement requested
+		if(optimalGateQuantification == 0){
+			quantifyGateVars();
+		}
+	}else if(inPrenexForm == 1){
+		qBlock *head = data->prefix;
+		if(head->prev->type == FORALL){ // current innermost block is a FORALL one, new one needed
+			qBlock *newBlock = malloc(sizeof(qBlock));
+			if(newBlock){
+				newBlock->type = EXISTS;
+				newBlock->variables = nonQuantifiedGates;
+				newBlock->next = head;
+				newBlock->prev = head->prev;
+				head->prev->next = newBlock;
+				head->prev = newBlock;
+			}else{
+				die("Runtime error occured at memory initialization (add non-quantified gates)");
+			}
+		}else{ // current innermost block is already an EXISTS one
+			varList *aux = head->prev->variables;
+			while(aux->next){
+				aux = aux->next;
+			}
+			aux->next = nonQuantifiedGates;
+		}
+	}else{
 		quantifyGateVars();
 	}
+	
 	indexVars();
-	if(declaredVariableCount){
+	
+	/*if(declaredVariableCount){
 		if(declaredVariableCount != data->tseitinVariableCount){
 			die("Cleansed form violation: Declared amount of variables(%lu) differs from actual amount(%lu)!", declaredVariableCount, data->tseitinVariableCount);
 		}
-	}
+	}*/
 	
 	printQDIMACS();
 	

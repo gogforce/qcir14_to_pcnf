@@ -565,9 +565,9 @@ void addLitToGate(gate *g, char sign, var *atom, char isNewVar){
 			if(atom->gateDefinition != NULL){
 				type = atom->gateDefinition->type;
 				if(type != TRUE && type != FALSE && g->type != PASS){
-					// increase usage counter, copy in case of multiple use
+					// increase usage counter, copy in case of multiple use, but not in the case of a prenex input formula
 					atom->gateDefinition->uses += 1;
-					if(atom->gateDefinition->uses > 1){
+					if((atom->gateDefinition->uses > 1) && (inPrenexForm == 0)){
 						atom = copyTree(atom);
 					}
 					// update subtree size if necessary

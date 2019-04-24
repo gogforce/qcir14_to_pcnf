@@ -81,6 +81,7 @@ char* word;
 unsigned long declaredVariableCount;
 char optimalGateQuantification;
 char prenexingStrategy;
+char inPrenexForm;
 
 // --- REQUIRED FUNCTIONS --- //
 
@@ -135,8 +136,8 @@ var *addUniqueFreeVar();
 // upgrade a var with a gate definition, returns a pointer to newly created gate definition
 // if var already has a gate definition, it is freed and replaced with a new one
 gate *defineGateVar(var *target, char type);
-// add a new unique gate variable to data set;
-void addUniqueGateVar(var *toAdd);
+// add a gate variable to data set;
+varList *addGateVar(var *toAdd);
 // add a new literal to a gate. isNewVar should be non-zero if atom is a freshly created variable.
 void addLitToGate(gate *g, char sign, var *atom, char isNewVar);
 // add a new literal to a gate, assume a free variable if not already defined in data

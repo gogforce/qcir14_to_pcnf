@@ -8,7 +8,7 @@ Usage:
 -s: Specify a prenexing strategy: '0':∃↑∀↑ (default), '1':∃↑∀↓, '2':∃↓∀↑, '3':∃↓∀↓.
 
 This is a Bachelor Thesis work, assigned by
-Associate Prof. Dipl.-Math. Dr.techn. Florian Zuleger and
+Dr. Florian Lonsing and
 Ao.Univ.Prof. Dipl.-Ing. Dr.rer.nat. Uwe Egly of TU Wien.
-Written by Georgi Marinov(gogmarinov@gmail.com)
+Written by Georgi Marinov (gogmarinov@gmail.com)
 with the wonderful help and provision of God.
